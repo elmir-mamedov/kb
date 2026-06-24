@@ -1,0 +1,16 @@
+# The knowledge base is its own git repo — never track it from the project repo.
+/kb/
+
+# Secrets / local environment — never commit
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+import matter from "gray-matter";
+import { z } from "zod";
+
+/**
+ * The minimal page frontmatter schema agreed in Step 1.
+ * `created` / `updated` / `author` are intentionally NOT here — they come from
+ * git, so there's a single source of truth and nothing to keep in sync.
+ */
+export const FrontmatterSchema = z.object({
+  title: z.string().min(1, "title is required"),
+  tags: z.array(z.string()).optional(),
+  summary: z.string().optional(),
+});
+
+export type Frontmatter = z.infer<typeof FrontmatterSchema>;
+
+export interface ParsedPage {
+  data: Frontmatter;
+  body: string;
+}
+
+/**
+ * Parse a raw .md file: split frontmatter from body and validate it.
+ * Throws a clear error if the frontmatter is malformed — so a bad header is
+ * caught on read rather than crashing the renderer somewhere downstream.
+ */
+export function parsePage(raw: string, sourceLabel = "page"): ParsedPage {
+  const { data, content } = matter(raw);
+  const result = FrontmatterSchema.safeParse(data);
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ");
+    throw new Error(`Invalid frontmatter in ${sourceLabel}: ${issues}`);
+  }
+  return { data: result.data, body: content };
+}
