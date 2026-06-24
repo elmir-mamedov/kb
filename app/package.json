@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lean read-only viewer for the markdown knowledge base (Step 2).",
+  "description": "Lean viewer/editor for the markdown knowledge base.",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",

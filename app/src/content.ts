@@ -20,6 +20,12 @@ export interface LoadedPage {
   fsPath: string;
 }
 
+export interface RawPage {
+  slug: string;
+  raw: string;
+  fsPath: string;
+}
+
 /**
  * The content layer. Everything reads from a single folder of markdown files —
  * the same folder the MCP server will write to in a later step.
@@ -113,6 +119,23 @@ export class Content {
     const raw = await fs.readFile(fsPath, "utf8");
     const { data, body } = parsePage(raw, fsPath);
     return { slug: slug.replace(/^\/+|\/+$/g, ""), data, body, fsPath };
+  }
+
+  /** Load the original markdown document, including frontmatter. */
+  async loadRaw(slug: string): Promise<RawPage | null> {
+    const fsPath = await this.resolve(slug);
+    if (!fsPath) return null;
+    const raw = await fs.readFile(fsPath, "utf8");
+    return { slug: slug.replace(/^\/+|\/+$/g, ""), raw, fsPath };
+  }
+
+  /** Validate and replace the original markdown document for an existing page. */
+  async updateRaw(slug: string, raw: string): Promise<RawPage | null> {
+    const fsPath = await this.resolve(slug);
+    if (!fsPath) return null;
+    parsePage(raw, fsPath);
+    await fs.writeFile(fsPath, raw, "utf8");
+    return { slug: slug.replace(/^\/+|\/+$/g, ""), raw, fsPath };
   }
 
   /** Flat slug -> title map, used to resolve wiki-link labels. */
