@@ -22,6 +22,7 @@ import {
   layout,
   loginLayout,
   notFound,
+  spacesLayout,
   type ViewNotice,
 } from "./views.js";
 
@@ -316,22 +317,29 @@ async function renderPage(
   slug: string,
   options: { notice?: ViewNotice } = {}
 ): Promise<{ status: number; html: string }> {
-  const [tree, titles] = await Promise.all([content.tree(), content.titleIndex()]);
-  const page = await content.load(slug);
+  const [spaces, titles, page] = await Promise.all([
+    content.spaces(),
+    content.titleIndex(),
+    content.load(slug),
+  ]);
 
   if (!page) {
     return {
       status: 404,
-      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME),
+      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME),
     };
   }
 
+  const spaceKey = content.spaceKeyOf(page.slug);
+  const tree = await content.spaceTree(spaceKey);
   const md = createRenderer((s) => titles.get(s));
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
 
   const html = layout({
     siteTitle: SITE_TITLE,
+    spaces,
+    spaceKey,
     tree,
     activeSlug: page.slug,
     titles,
@@ -348,15 +356,15 @@ async function renderPage(
 }
 
 async function renderArchiveBrowser(): Promise<string> {
-  const [tree, archiveTree, titles] = await Promise.all([
-    content.tree(),
+  const [spaces, archiveTree, titles] = await Promise.all([
+    content.spaces(),
     content.tree("archived"),
     content.titleIndex(),
   ]);
 
   return archiveLayout({
     siteTitle: SITE_TITLE,
-    tree,
+    spaces,
     archiveTree,
     titles,
     username: AUTH_USERNAME,
@@ -364,10 +372,12 @@ async function renderArchiveBrowser(): Promise<string> {
 }
 
 async function renderSystemNotice(title: string, notice: ViewNotice): Promise<string> {
-  const [tree, titles] = await Promise.all([content.tree(), content.titleIndex()]);
+  const [spaces, titles] = await Promise.all([content.spaces(), content.titleIndex()]);
   return layout({
     siteTitle: SITE_TITLE,
-    tree,
+    spaces,
+    spaceKey: "",
+    tree: [],
     activeSlug: "",
     titles,
     title,
@@ -382,8 +392,8 @@ async function renderEditPage(
   slug: string,
   options: { raw?: string; error?: string; notice?: string } = {}
 ): Promise<{ status: number; html: string }> {
-  const [tree, titles, page] = await Promise.all([
-    content.tree(),
+  const [spaces, titles, page] = await Promise.all([
+    content.spaces(),
     content.titleIndex(),
     content.loadRaw(slug),
   ]);
@@ -391,13 +401,17 @@ async function renderEditPage(
   if (!page) {
     return {
       status: 404,
-      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME),
+      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME),
     };
   }
 
+  const spaceKey = content.spaceKeyOf(page.slug);
+  const tree = await content.spaceTree(spaceKey);
   const fallbackTitle = page.slug.split("/").pop() || "Home";
   const html = editLayout({
     siteTitle: SITE_TITLE,
+    spaces,
+    spaceKey,
     tree,
     activeSlug: page.slug,
     titles,
@@ -411,8 +425,8 @@ async function renderEditPage(
 }
 
 async function renderDeletePage(slug: string): Promise<{ status: number; html: string }> {
-  const [tree, titles, preview] = await Promise.all([
-    content.tree(),
+  const [spaces, titles, preview] = await Promise.all([
+    content.spaces(),
     content.titleIndex(),
     content.deletePreview(slug),
   ]);
@@ -420,14 +434,18 @@ async function renderDeletePage(slug: string): Promise<{ status: number; html: s
   if (!preview) {
     return {
       status: 404,
-      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME),
+      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME),
     };
   }
 
+  const spaceKey = content.spaceKeyOf(preview.slug);
+  const tree = await content.spaceTree(spaceKey);
   return {
     status: 200,
     html: deleteLayout({
       siteTitle: SITE_TITLE,
+      spaces,
+      spaceKey,
       tree,
       activeSlug: preview.slug,
       titles,
@@ -475,16 +493,49 @@ app.post("/_logout", async (_req, reply) => {
   return reply.header("set-cookie", clearSessionCookie()).redirect("/_login", 303);
 });
 
-app.post("/_create", async (_req, reply) => {
+app.post("/_create", async (req, reply) => {
+  const parentSlug = formString(req.body, "parentSlug") ?? "";
   let mutation: CreatePageMutation;
   try {
-    mutation = await content.createRootDraft();
+    mutation = await content.createDraft(parentSlug);
   } catch (err) {
     const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
     return reply
       .code(500)
       .type("text/html")
       .send(await renderSystemNotice("Create failed", notice));
+  }
+
+  try {
+    await gitCommitFiles([mutation.fsPath], createCommitMessage(mutation));
+  } catch (err) {
+    const { html } = await renderEditPage(mutation.slug, {
+      error: `Created, but Git commit failed: ${errorMessage(err)}`,
+    });
+    return reply.code(500).type("text/html").send(html);
+  }
+
+  return reply.redirect(`/_edit${pagePath(mutation.slug)}`, 303);
+});
+
+app.post("/_create-space", async (req, reply) => {
+  const title = formString(req.body, "title") ?? "";
+  let mutation: CreatePageMutation;
+  try {
+    mutation = await content.createSpace(title);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    return reply
+      .code(400)
+      .type("text/html")
+      .send(
+        spacesLayout({
+          siteTitle: SITE_TITLE,
+          spaces: await content.spaces(),
+          notice,
+          username: AUTH_USERNAME,
+        })
+      );
   }
 
   try {
@@ -579,11 +630,11 @@ async function handleArchiveMutation(
   }
 
   if (!mutation) {
-    const tree = await content.tree();
+    const spaces = await content.spaces();
     return reply
       .code(404)
       .type("text/html")
-      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME));
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
   }
 
   try {
@@ -674,11 +725,11 @@ app.post("/_delete/*", async (req, reply) => {
   }
 
   if (!mutation) {
-    const tree = await content.tree();
+    const spaces = await content.spaces();
     return reply
       .code(404)
       .type("text/html")
-      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME));
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
   }
 
   try {
@@ -697,20 +748,16 @@ app.post("/_delete/*", async (req, reply) => {
   return reply.redirect("/", 303);
 });
 
-// Home: a real root index.md if present, else the first top-level page.
+// Home: the spaces landing grid (each top-level folder is a space).
 app.get("/", async (_req, reply) => {
-  const rootPage = await content.resolve("");
-  if (rootPage) {
-    const { status, html } = await renderPage("");
-    return reply.code(status).type("text/html").send(html);
-  }
-  const tree = await content.tree();
-  const first = tree[0];
-  if (first) return reply.redirect("/" + first.slug);
-    return reply
-      .code(200)
-      .type("text/html")
-      .send(notFound(SITE_TITLE, "", tree, AUTH_USERNAME));
+  const spaces = await content.spaces();
+  return reply.type("text/html").send(
+    spacesLayout({
+      siteTitle: SITE_TITLE,
+      spaces,
+      username: AUTH_USERNAME,
+    })
+  );
 });
 
 app.get("/_edit/*", async (req, reply) => {
@@ -741,11 +788,11 @@ app.post("/_edit/*", async (req, reply) => {
   }
 
   if (!page) {
-    const tree = await content.tree();
+    const spaces = await content.spaces();
     return reply
       .code(404)
       .type("text/html")
-      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME));
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
   }
 
   try {

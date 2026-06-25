@@ -10,6 +10,8 @@ export const FrontmatterSchema = z.object({
   title: z.string().min(1, "title is required"),
   tags: z.array(z.string()).optional(),
   summary: z.string().optional(),
+  /** Optional emoji shown on the space card; only meaningful on a space's index.md. */
+  icon: z.string().optional(),
   archived: z.boolean().optional(),
   archivedAt: z.string().optional(),
 });

@@ -19,6 +19,15 @@ export interface PageNode {
   children: PageNode[];
 }
 
+export interface SpaceInfo {
+  /** Top-level directory name; also the first segment of every page slug within. */
+  key: string;
+  title: string;
+  summary?: string;
+  icon?: string;
+  archived: boolean;
+}
+
 export interface LoadedPage {
   slug: string;
   data: Frontmatter;
@@ -74,6 +83,58 @@ export class Content {
   /** Build the navigation tree by walking the folder. */
   async tree(filter: TreeFilter = "live"): Promise<PageNode[]> {
     return this.walk(this.root, "", filter);
+  }
+
+  /** The space a slug belongs to: its first path segment ("" for the root). */
+  spaceKeyOf(slug: string): string {
+    return cleanSlug(slug).split("/")[0] ?? "";
+  }
+
+  /** List spaces — the top-level directories, each described by its index.md. */
+  async spaces(filter: TreeFilter = "live"): Promise<SpaceInfo[]> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(this.root, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    const spaces: SpaceInfo[] = [];
+    for (const entry of entries) {
+      const name = entry.name;
+      if (!entry.isDirectory()) continue;
+      if (name.startsWith(".") || name.startsWith("_")) continue;
+
+      let title = name;
+      let summary: string | undefined;
+      let icon: string | undefined;
+      let archived = false;
+      try {
+        const raw = await fs.readFile(path.join(this.root, name, "index.md"), "utf8");
+        const data = parsePage(raw, name).data;
+        title = data.title;
+        summary = data.summary;
+        icon = data.icon;
+        archived = data.archived === true;
+      } catch {
+        /* folder without a valid index.md — still a navigable space */
+      }
+
+      if (filter === "live" && archived) continue;
+      if (filter === "archived" && !archived) continue;
+      spaces.push({ key: name, title, summary, icon, archived });
+    }
+
+    spaces.sort((a, b) => a.title.localeCompare(b.title));
+    return spaces;
+  }
+
+  /** The navigation subtree for a single space (its pages, minus the space home). */
+  async spaceTree(spaceKey: string, filter: TreeFilter = "live"): Promise<PageNode[]> {
+    const key = this.spaceKeyOf(spaceKey);
+    if (!key) return [];
+    const top = await this.tree(filter);
+    return top.find((n) => n.slug === key)?.children ?? [];
   }
 
   private async walk(dir: string, baseSlug: string, filter: TreeFilter): Promise<PageNode[]> {
@@ -203,14 +264,56 @@ export class Content {
   }
 
   /** Create a root-level draft page with a unique slug. */
-  async createRootDraft(): Promise<CreatePageMutation> {
-    const { slug, title } = await this.nextRootDraft();
-    const fsPath = path.join(this.root, `${slug}.md`);
+  /** Create an untitled draft page inside a space/section (or root when parent is ""). */
+  async createDraft(parentSlug = ""): Promise<CreatePageMutation> {
+    const cleanParent = cleanSlug(parentSlug);
+    let parentDir = this.root;
+    let parentPrefix = "";
+
+    if (cleanParent) {
+      const parentFsPath = await this.resolve(cleanParent);
+      if (!parentFsPath) {
+        throw new Error("The destination space or section does not exist.");
+      }
+      if (!this.isSectionFsPath(parentFsPath)) {
+        throw new Error("Pages can only be created inside a space or section.");
+      }
+      parentDir = path.dirname(parentFsPath);
+      parentPrefix = cleanParent;
+    }
+
+    const { name, title } = await this.nextDraftName(parentDir);
+    const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
+    const fsPath = path.join(parentDir, `${name}.md`);
     const raw = matter.stringify(`# ${title}\n\n`, { title });
 
     parsePage(raw, fsPath);
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
     return { slug, fsPath };
+  }
+
+  /** Create a new space: a top-level folder with an index.md home page. */
+  async createSpace(title: string): Promise<CreatePageMutation> {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      throw new Error("A space title is required.");
+    }
+    const key = slugify(trimmed);
+    if (!key) {
+      throw new Error("The space title must contain letters or numbers.");
+    }
+
+    const dir = path.join(this.root, key);
+    const fsPath = path.join(dir, "index.md");
+    if ((await exists(dir)) || (await exists(path.join(this.root, `${key}.md`)))) {
+      throw new Error(`A space named "${key}" already exists.`);
+    }
+
+    const raw = matter.stringify(`# ${trimmed}\n\n`, { title: trimmed });
+    parsePage(raw, fsPath);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
+    return { slug: key, fsPath };
   }
 
   /** Return deletion impact without mutating the filesystem. */
@@ -411,16 +514,16 @@ export class Content {
     return files.sort((a, b) => a.localeCompare(b));
   }
 
-  private async nextRootDraft(): Promise<{ slug: string; title: string }> {
+  private async nextDraftName(baseDir: string): Promise<{ name: string; title: string }> {
     for (let index = 1; index < 10_000; index += 1) {
       const suffix = index === 1 ? "" : `-${index}`;
       const titleSuffix = index === 1 ? "" : ` ${index}`;
-      const slug = `untitled-page${suffix}`;
-      const candidateFile = path.join(this.root, `${slug}.md`);
-      const candidateDir = path.join(this.root, slug);
+      const name = `untitled-page${suffix}`;
+      const candidateFile = path.join(baseDir, `${name}.md`);
+      const candidateDir = path.join(baseDir, name);
 
       if (!(await exists(candidateFile)) && !(await exists(candidateDir))) {
-        return { slug, title: `Untitled Page${titleSuffix}` };
+        return { name, title: `Untitled Page${titleSuffix}` };
       }
     }
 
@@ -500,6 +603,13 @@ export class Content {
 
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function uniquePaths(paths: string[]): string[] {

@@ -173,16 +173,22 @@ function excerptFor(query: string, body: string, summary?: string): string {
   return `${prefix}${normalizedBody.slice(start, end)}${suffix}`;
 }
 
-async function listPages(filter: TreeFilter): Promise<ListedPage[]> {
-  return (await content.tree(filter)).map(listedPage);
+async function listPages(filter: TreeFilter, space?: string): Promise<ListedPage[]> {
+  const nodes = space
+    ? await content.spaceTree(space, filter)
+    : await content.tree(filter);
+  return nodes.map(listedPage);
 }
 
 async function searchPages(
   query: string,
   filter: TreeFilter,
-  limit: number
+  limit: number,
+  space?: string
 ): Promise<SearchMatch[]> {
-  const nodes = flatten(await content.tree(filter));
+  const nodes = flatten(
+    space ? await content.spaceTree(space, filter) : await content.tree(filter)
+  );
   const matches: SearchMatch[] = [];
 
   for (const node of nodes) {
@@ -223,17 +229,17 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read-only access to the Markdown knowledge base. Use kb_search to find pages, kb_get_page to read Markdown, and kb_list_pages to inspect navigation.",
+      "Read-only access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Use kb_list_spaces to see spaces, kb_search to find pages, kb_get_page to read Markdown, and kb_list_pages to inspect navigation. Pass `space` to kb_list_pages or kb_search to scope to a single space.",
   }
 );
 
 server.registerTool(
-  "kb_list_pages",
+  "kb_list_spaces",
   {
-    title: "List KB Pages",
-    description: "Return the knowledge-base navigation tree.",
+    title: "List KB Spaces",
+    description: "Return the spaces — the top-level containers, each holding a tree of pages.",
     inputSchema: {
-      filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
+      filter: filterSchema.optional().describe("Which spaces to include. Defaults to live."),
     },
     annotations: {
       readOnlyHint: true,
@@ -241,11 +247,38 @@ server.registerTool(
     },
   },
   async ({ filter }) => {
+    return textResult({
+      siteTitle: SITE_TITLE,
+      spaces: await content.spaces(filter ?? "live"),
+    });
+  }
+);
+
+server.registerTool(
+  "kb_list_pages",
+  {
+    title: "List KB Pages",
+    description:
+      "Return the knowledge-base navigation tree. Top-level entries are spaces; pass `space` to list one space's pages.",
+    inputSchema: {
+      filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
+      space: z
+        .string()
+        .optional()
+        .describe("Limit to a single space (its top-level folder key, e.g. flux)."),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  },
+  async ({ filter, space }) => {
     const selectedFilter = filter ?? "live";
     return textResult({
       siteTitle: SITE_TITLE,
       filter: selectedFilter,
-      pages: await listPages(selectedFilter),
+      space: space ?? null,
+      pages: await listPages(selectedFilter, space),
     });
   }
 );
@@ -306,20 +339,25 @@ server.registerTool(
       query: z.string().min(1).describe("Search query."),
       filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
       limit: z.number().int().min(1).max(50).optional().describe("Maximum matches. Defaults to 10."),
+      space: z
+        .string()
+        .optional()
+        .describe("Limit search to a single space (its top-level folder key, e.g. flux)."),
     },
     annotations: {
       readOnlyHint: true,
       openWorldHint: false,
     },
   },
-  async ({ query, filter, limit }) => {
+  async ({ query, filter, limit, space }) => {
     const selectedFilter = filter ?? "live";
     const selectedLimit = limit ?? 10;
     return textResult({
       query,
       filter: selectedFilter,
       limit: selectedLimit,
-      matches: await searchPages(query, selectedFilter, selectedLimit),
+      space: space ?? null,
+      matches: await searchPages(query, selectedFilter, selectedLimit, space),
     });
   }
 );

@@ -1,4 +1,4 @@
-import type { PageNode } from "./content.js";
+import type { PageNode, SpaceInfo } from "./content.js";
 
 export function escapeHtml(s: string): string {
   return s
@@ -44,13 +44,18 @@ function breadcrumb(slug: string, titles: Map<string, string>): string {
     const title = titles.get(acc) ?? part;
     crumbs.push(`<a href="/${acc}">${escapeHtml(title)}</a>`);
   }
-  return `<nav class="crumbs"><a href="/">Home</a> ${crumbs
+  return `<nav class="crumbs"><a href="/">Spaces</a> ${crumbs
     .map((c) => `<span class="sep">/</span> ${c}`)
     .join(" ")}</nav>`;
 }
 
 export interface PageView {
   siteTitle: string;
+  /** Full space list for the switcher. */
+  spaces: SpaceInfo[];
+  /** Active space key ("" outside any space, e.g. the archive browser). */
+  spaceKey: string;
+  /** Navigation subtree for the active space (scoped, not the whole KB). */
   tree: PageNode[];
   activeSlug: string;
   titles: Map<string, string>;
@@ -68,6 +73,8 @@ export interface PageView {
 
 export interface EditView {
   siteTitle: string;
+  spaces: SpaceInfo[];
+  spaceKey: string;
   tree: PageNode[];
   activeSlug: string;
   titles: Map<string, string>;
@@ -80,7 +87,7 @@ export interface EditView {
 
 export interface ArchiveView {
   siteTitle: string;
-  tree: PageNode[];
+  spaces: SpaceInfo[];
   archiveTree: PageNode[];
   titles: Map<string, string>;
   username?: string | null;
@@ -88,6 +95,8 @@ export interface ArchiveView {
 
 export interface DeleteView {
   siteTitle: string;
+  spaces: SpaceInfo[];
+  spaceKey: string;
   tree: PageNode[];
   activeSlug: string;
   titles: Map<string, string>;
@@ -95,6 +104,13 @@ export interface DeleteView {
   fsPath: string;
   isSection: boolean;
   affectedCount: number;
+  username?: string | null;
+}
+
+export interface SpacesView {
+  siteTitle: string;
+  spaces: SpaceInfo[];
+  notice?: ViewNotice;
   username?: string | null;
 }
 
@@ -117,22 +133,57 @@ function slugPath(slug: string): string {
 
 function sidebarHtml(
   siteTitle: string,
+  spaces: SpaceInfo[],
+  spaceKey: string,
   tree: PageNode[],
   activeSlug: string,
   isArchiveView = false
 ): string {
   const archiveCls = isArchiveView ? " active" : "";
-  const rootDrop = isArchiveView
+
+  // Outside any space (archive browser, 404): just list the spaces.
+  if (!spaceKey) {
+    const list = spaces.length
+      ? `<ul>${spaces
+          .map(
+            (s) =>
+              `<li><a href="${slugPath(s.key)}">${escapeHtml(
+                s.icon ? `${s.icon} ${s.title}` : s.title
+              )}</a></li>`
+          )
+          .join("")}</ul>`
+      : "";
+    return `<aside class="sidebar">
+  <a class="brand" href="/">${escapeHtml(siteTitle)}</a>
+  <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
+  <nav class="tree">${list}</nav>
+</aside>`;
+  }
+
+  const current = spaces.find((s) => s.key === spaceKey);
+  const spaceLabel = current
+    ? current.icon
+      ? `${current.icon} ${current.title}`
+      : current.title
+    : spaceKey;
+  const switcher = `<div class="space-switcher">
+    <a class="space-current" href="${slugPath(spaceKey)}">${escapeHtml(spaceLabel)}</a>
+    <a class="space-all" href="/">↩ All spaces</a>
+  </div>`;
+  const spaceRootDrop = isArchiveView
     ? ""
-    : `<div class="root-drop" data-drop-root="true">Top level</div>
+    : `<div class="root-drop" data-drop-slug="${escapeHtml(spaceKey)}">Move to space root</div>
   <div class="move-error" data-move-error hidden></div>`;
+
   return `<aside class="sidebar">
   <a class="brand" href="/">${escapeHtml(siteTitle)}</a>
+  ${switcher}
   <form class="sidebar-form" method="post" action="/_create">
-    <button class="sidebar-link sidebar-button" type="submit">Create</button>
+    <input type="hidden" name="parentSlug" value="${escapeHtml(spaceKey)}" />
+    <button class="sidebar-link sidebar-button" type="submit">Create page</button>
   </form>
   <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
-  ${rootDrop}
+  ${spaceRootDrop}
   <nav class="tree">${renderTree(tree, activeSlug, { dragEnabled: !isArchiveView })}</nav>
 </aside>`;
 }
@@ -192,7 +243,7 @@ export function layout(v: PageView): string {
 <style>${STYLES}</style>
 </head>
 <body>
-${sidebarHtml(v.siteTitle, v.tree, v.activeSlug, v.isArchiveView)}
+${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchiveView)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
   <header class="page-head">
@@ -219,7 +270,9 @@ export function archiveLayout(v: ArchiveView): string {
 
   return layout({
     siteTitle: v.siteTitle,
-    tree: v.tree,
+    spaces: v.spaces,
+    spaceKey: "",
+    tree: [],
     activeSlug: "",
     titles: v.titles,
     title: "Archive",
@@ -239,6 +292,8 @@ export function deleteLayout(v: DeleteView): string {
 
   return layout({
     siteTitle: v.siteTitle,
+    spaces: v.spaces,
+    spaceKey: v.spaceKey,
     tree: v.tree,
     activeSlug: v.activeSlug,
     titles: v.titles,
@@ -273,7 +328,7 @@ export function editLayout(v: EditView): string {
 <style>${STYLES}</style>
 </head>
 <body>
-${sidebarHtml(v.siteTitle, v.tree, v.activeSlug)}
+${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
 <main class="content editor-content">
   ${breadcrumb(v.activeSlug, v.titles)}
   <header class="page-head">
@@ -337,12 +392,14 @@ export function loginLayout(v: LoginView): string {
 export function notFound(
   siteTitle: string,
   slug: string,
-  tree: PageNode[],
+  spaces: SpaceInfo[],
   username?: string | null
 ): string {
   return layout({
     siteTitle,
-    tree,
+    spaces,
+    spaceKey: "",
+    tree: [],
     activeSlug: "",
     titles: new Map(),
     title: "Not found",
@@ -350,6 +407,56 @@ export function notFound(
     canEdit: false,
     username,
   });
+}
+
+export function spacesLayout(v: SpacesView): string {
+  const notice = v.notice
+    ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
+    : "";
+  const cards = v.spaces.length
+    ? v.spaces
+        .map((s) => {
+          const icon = s.icon
+            ? `<span class="space-icon">${escapeHtml(s.icon)}</span>`
+            : "";
+          const summary = s.summary
+            ? `<p class="space-summary">${escapeHtml(s.summary)}</p>`
+            : "";
+          return `<a class="space-card" href="${slugPath(s.key)}">
+    ${icon}
+    <span class="space-card-title">${escapeHtml(s.title)}</span>
+    ${summary}
+  </a>`;
+        })
+        .join("")
+    : `<p class="empty">No spaces yet — create your first one below.</p>`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spaces · ${escapeHtml(v.siteTitle)}</title>
+<style>${STYLES}</style>
+</head>
+<body class="spaces-page">
+<main class="spaces-main">
+  <header class="spaces-head">
+    <h1>${escapeHtml(v.siteTitle)}</h1>
+    <div class="actions">
+      <a class="button secondary" href="/_archive">Archive</a>
+      ${sessionActions(v.username)}
+    </div>
+  </header>
+  ${notice}
+  <section class="spaces-grid">${cards}</section>
+  <form class="new-space-form" method="post" action="/_create-space">
+    <input type="text" name="title" placeholder="New space name" aria-label="New space name" maxlength="80" required />
+    <button class="button primary" type="submit">New Space</button>
+  </form>
+</main>
+</body>
+</html>`;
 }
 
 const MOVE_SCRIPT = `
@@ -606,6 +713,31 @@ a:hover{text-decoration:underline}
 .hljs-number,.hljs-built_in{color:#005cc5}
 .hljs-title,.hljs-section,.hljs-name{color:#6f42c1}
 .hljs-attr,.hljs-attribute,.hljs-variable{color:#e36209}
+/* space switcher in the sidebar */
+.space-switcher{margin:0 0 16px}
+.space-current{display:block; font-weight:700; font-size:15px; color:var(--fg)}
+.space-all{display:block; color:var(--muted); font-size:12px; margin-top:2px}
+/* spaces landing page */
+.spaces-page{display:block; background:var(--sidebar)}
+.spaces-main{max-width:920px; margin:0 auto; padding:40px 24px}
+.spaces-head{display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:28px}
+.spaces-head h1{font-size:28px; line-height:1.2; margin:0}
+.spaces-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px}
+.space-card{
+  display:flex; flex-direction:column; gap:6px; padding:18px 18px 20px;
+  border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--fg);
+}
+.space-card:hover{text-decoration:none; border-color:#93c5fd; box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.space-icon{font-size:26px; line-height:1}
+.space-card-title{font-weight:700; font-size:16px}
+.space-summary{margin:0; color:var(--muted); font-size:13px; line-height:1.5}
+.spaces-grid .empty{color:var(--muted)}
+.new-space-form{display:flex; gap:8px; margin-top:28px}
+.new-space-form input{
+  flex:1; max-width:360px; border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+  font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+.new-space-form input:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
 @media(max-width:780px){
   body{flex-direction:column}
   .sidebar{width:auto; flex:none; height:auto; position:static; border-right:none;
