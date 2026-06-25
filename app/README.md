@@ -71,8 +71,8 @@ Example client config:
 {
   "mcpServers": {
     "flux-kb": {
-      "command": "npm",
-      "args": ["run", "mcp", "--prefix", "/Users/elmir.mamedov/dev/flux/app"],
+      "command": "/Users/elmir.mamedov/dev/flux/app/node_modules/.bin/tsx",
+      "args": ["/Users/elmir.mamedov/dev/flux/app/src/mcp.ts"],
       "env": {
         "KB_DIR": "/Users/elmir.mamedov/dev/flux/kb"
       }
