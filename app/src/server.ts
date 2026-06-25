@@ -4,11 +4,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import Fastify, { type FastifyRequest } from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
-import { Content } from "./content.js";
+import {
+  Content,
+  type ArchiveMutation,
+  type CreatePageMutation,
+  type DeleteMutation,
+  type MoveMutation,
+} from "./content.js";
 import { createRenderer } from "./markdown.js";
-import { editLayout, layout, loginLayout, notFound } from "./views.js";
+import {
+  archiveLayout,
+  deleteLayout,
+  editLayout,
+  escapeHtml,
+  layout,
+  loginLayout,
+  notFound,
+  type ViewNotice,
+} from "./views.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,38 +215,86 @@ async function gitUpdated(fsPath: string): Promise<string | null> {
   }
 }
 
-async function gitCommitPage(fsPath: string): Promise<string | null> {
+function kbRelPath(fsPath: string): string {
   const relPath = path.relative(KB_DIR, fsPath);
   if (!relPath || relPath.startsWith("..") || path.isAbsolute(relPath)) {
     throw new Error("Refusing to commit a file outside the knowledge base.");
   }
+  return relPath.split(path.sep).join("/");
+}
 
-  const rel = relPath.split(path.sep).join("/");
+async function gitCommitFiles(fsPaths: string[], message: string): Promise<string | null> {
+  const rels = [...new Set(fsPaths.map(kbRelPath))];
+  if (rels.length === 0) return null;
+
   const { stdout: status } = await execFileAsync(
     "git",
-    ["status", "--porcelain", "--", rel],
+    ["status", "--porcelain", "--", ...rels],
     { cwd: KB_DIR }
   );
   if (!status.trim()) return null;
 
-  const message = `Update ${rel} via web`;
+  await execFileAsync("git", ["add", "--", ...rels], { cwd: KB_DIR });
 
-  if (status
+  const hasUntracked = status
     .split("\n")
     .filter(Boolean)
-    .some((line) => line.startsWith("??"))) {
-    await execFileAsync("git", ["add", "--", rel], { cwd: KB_DIR });
-    await execFileAsync("git", ["commit", "-m", message, "--", rel], { cwd: KB_DIR });
-  } else {
-    await execFileAsync("git", ["commit", "--only", "-m", message, "--", rel], {
-      cwd: KB_DIR,
-    });
-  }
+    .some((line) => line.startsWith("??"));
+  const commitArgs = hasUntracked
+    ? ["commit", "-m", message, "--", ...rels]
+    : ["commit", "--only", "-m", message, "--", ...rels];
+
+  await execFileAsync("git", commitArgs, { cwd: KB_DIR });
 
   const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
     cwd: KB_DIR,
   });
   return stdout.trim() || null;
+}
+
+async function gitCommitMovedPaths(fsPaths: string[], message: string): Promise<string | null> {
+  const rels = [...new Set(fsPaths.map(kbRelPath))];
+  if (rels.length === 0) return null;
+
+  const { stdout: status } = await execFileAsync(
+    "git",
+    ["status", "--porcelain", "--", ...rels],
+    { cwd: KB_DIR }
+  );
+  if (!status.trim()) return null;
+
+  await execFileAsync("git", ["add", "-A", "--", ...rels], { cwd: KB_DIR });
+  await execFileAsync("git", ["commit", "-m", message, "--", ...rels], {
+    cwd: KB_DIR,
+  });
+
+  const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
+    cwd: KB_DIR,
+  });
+  return stdout.trim() || null;
+}
+
+async function gitCommitPage(fsPath: string): Promise<string | null> {
+  const rel = kbRelPath(fsPath);
+  return gitCommitFiles([fsPath], `Update ${rel} via web`);
+}
+
+function archiveCommitMessage(action: "Archive" | "Restore", mutation: ArchiveMutation): string {
+  const target = mutation.isSection ? mutation.slug : kbRelPath(mutation.fsPath);
+  return `${action} ${target} via web`;
+}
+
+function createCommitMessage(mutation: CreatePageMutation): string {
+  return `Create ${kbRelPath(mutation.fsPath)} via web`;
+}
+
+function deleteCommitMessage(mutation: DeleteMutation): string {
+  const target = mutation.isSection ? mutation.slug : kbRelPath(mutation.fsPath);
+  return `Delete ${target} via web`;
+}
+
+function moveCommitMessage(mutation: MoveMutation): string {
+  return `Move ${mutation.oldSlug} to ${mutation.newSlug} via web`;
 }
 
 function errorMessage(err: unknown): string {
@@ -249,7 +312,10 @@ function pagePath(slug: string): string {
   return "/" + slug.split("/").map(encodeURIComponent).join("/");
 }
 
-async function renderPage(slug: string): Promise<{ status: number; html: string }> {
+async function renderPage(
+  slug: string,
+  options: { notice?: ViewNotice } = {}
+): Promise<{ status: number; html: string }> {
   const [tree, titles] = await Promise.all([content.tree(), content.titleIndex()]);
   const page = await content.load(slug);
 
@@ -273,9 +339,43 @@ async function renderPage(slug: string): Promise<{ status: number; html: string 
     tags: page.data.tags,
     contentHtml,
     updated,
+    isArchived: page.data.archived === true,
+    archivedAt: page.data.archivedAt,
+    notice: options.notice,
     username: AUTH_USERNAME,
   });
   return { status: 200, html };
+}
+
+async function renderArchiveBrowser(): Promise<string> {
+  const [tree, archiveTree, titles] = await Promise.all([
+    content.tree(),
+    content.tree("archived"),
+    content.titleIndex(),
+  ]);
+
+  return archiveLayout({
+    siteTitle: SITE_TITLE,
+    tree,
+    archiveTree,
+    titles,
+    username: AUTH_USERNAME,
+  });
+}
+
+async function renderSystemNotice(title: string, notice: ViewNotice): Promise<string> {
+  const [tree, titles] = await Promise.all([content.tree(), content.titleIndex()]);
+  return layout({
+    siteTitle: SITE_TITLE,
+    tree,
+    activeSlug: "",
+    titles,
+    title,
+    contentHtml: `<p>${escapeHtml(notice.text)}</p>`,
+    canEdit: false,
+    notice,
+    username: AUTH_USERNAME,
+  });
 }
 
 async function renderEditPage(
@@ -308,6 +408,36 @@ async function renderEditPage(
     username: AUTH_USERNAME,
   });
   return { status: options.error ? 400 : 200, html };
+}
+
+async function renderDeletePage(slug: string): Promise<{ status: number; html: string }> {
+  const [tree, titles, preview] = await Promise.all([
+    content.tree(),
+    content.titleIndex(),
+    content.deletePreview(slug),
+  ]);
+
+  if (!preview) {
+    return {
+      status: 404,
+      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME),
+    };
+  }
+
+  return {
+    status: 200,
+    html: deleteLayout({
+      siteTitle: SITE_TITLE,
+      tree,
+      activeSlug: preview.slug,
+      titles,
+      title: preview.title,
+      fsPath: preview.fsPath,
+      isSection: preview.isSection,
+      affectedCount: preview.affectedFsPaths.length,
+      username: AUTH_USERNAME,
+    }),
+  };
 }
 
 app.get("/_login", async (req, reply) => {
@@ -343,6 +473,228 @@ app.post("/_login", async (req, reply) => {
 
 app.post("/_logout", async (_req, reply) => {
   return reply.header("set-cookie", clearSessionCookie()).redirect("/_login", 303);
+});
+
+app.post("/_create", async (_req, reply) => {
+  let mutation: CreatePageMutation;
+  try {
+    mutation = await content.createRootDraft();
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    return reply
+      .code(500)
+      .type("text/html")
+      .send(await renderSystemNotice("Create failed", notice));
+  }
+
+  try {
+    await gitCommitFiles([mutation.fsPath], createCommitMessage(mutation));
+  } catch (err) {
+    const { html } = await renderEditPage(mutation.slug, {
+      error: `Created, but Git commit failed: ${errorMessage(err)}`,
+    });
+    return reply.code(500).type("text/html").send(html);
+  }
+
+  return reply.redirect(`/_edit${pagePath(mutation.slug)}`, 303);
+});
+
+app.post("/_move", async (req, reply) => {
+  const sourceSlug = formString(req.body, "sourceSlug") ?? "";
+  const targetKind = formString(req.body, "targetKind") ?? "";
+  const targetSlug = formString(req.body, "targetSlug") ?? "";
+
+  if (!sourceSlug) {
+    return reply.code(400).send({ ok: false, error: "Missing source page." });
+  }
+  if (targetKind !== "root" && targetKind !== "page") {
+    return reply.code(400).send({ ok: false, error: "Invalid destination." });
+  }
+  if (targetKind === "page" && !targetSlug) {
+    return reply.code(400).send({ ok: false, error: "Missing destination page." });
+  }
+
+  let mutation: MoveMutation | null;
+  try {
+    mutation = await content.movePage(
+      sourceSlug,
+      targetKind === "root" ? null : targetSlug
+    );
+  } catch (err) {
+    return reply.code(400).send({ ok: false, error: errorMessage(err) });
+  }
+
+  if (!mutation) {
+    return reply.code(404).send({ ok: false, error: "Source page not found." });
+  }
+
+  try {
+    await gitCommitMovedPaths(mutation.changedFsPaths, moveCommitMessage(mutation));
+  } catch (err) {
+    return reply.code(500).send({
+      ok: false,
+      error: `Moved, but Git commit failed: ${errorMessage(err)}`,
+      url: pagePath(mutation.newSlug),
+    });
+  }
+
+  return reply.send({
+    ok: true,
+    slug: mutation.newSlug,
+    url: pagePath(mutation.newSlug),
+  });
+});
+
+app.get("/_archive", async (_req, reply) => {
+  return reply.type("text/html").send(await renderArchiveBrowser());
+});
+
+async function handleArchiveMutation(
+  slug: string,
+  archived: boolean,
+  reply: FastifyReply
+) {
+  let mutation: ArchiveMutation | null;
+  try {
+    mutation = await content.updateArchive(slug, archived);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    if (slug.replace(/^\/+|\/+$/g, "") === "") {
+      return reply
+        .code(400)
+        .type("text/html")
+        .send(await renderSystemNotice("Archive blocked", notice));
+    }
+
+    const { status, html } = await renderPage(slug, {
+      notice,
+    });
+    if (status === 404) {
+      return reply
+        .code(400)
+        .type("text/html")
+        .send(await renderSystemNotice("Archive failed", notice));
+    }
+    return reply.code(400).type("text/html").send(html);
+  }
+
+  if (!mutation) {
+    const tree = await content.tree();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME));
+  }
+
+  try {
+    await gitCommitFiles(
+      mutation.changedFsPaths,
+      archiveCommitMessage(archived ? "Archive" : "Restore", mutation)
+    );
+  } catch (err) {
+    const verb = archived ? "Archived" : "Restored";
+    const { html } = await renderPage(mutation.slug, {
+      notice: {
+        tone: "error",
+        text: `${verb}, but Git commit failed: ${errorMessage(err)}`,
+      },
+    });
+    return reply.code(500).type("text/html").send(html);
+  }
+
+  return reply.redirect(pagePath(mutation.slug), 303);
+}
+
+app.post("/_archive", async (_req, reply) => {
+  return handleArchiveMutation("", true, reply);
+});
+
+app.post("/_archive/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  return handleArchiveMutation(slug, true, reply);
+});
+
+app.post("/_restore", async (_req, reply) => {
+  return handleArchiveMutation("", false, reply);
+});
+
+app.post("/_restore/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  return handleArchiveMutation(slug, false, reply);
+});
+
+app.get("/_delete", async (_req, reply) => {
+  const notice = {
+    tone: "error",
+    text: "The home page cannot be deleted.",
+  } satisfies ViewNotice;
+  return reply
+    .code(400)
+    .type("text/html")
+    .send(await renderSystemNotice("Delete blocked", notice));
+});
+
+app.get("/_delete/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  try {
+    const { status, html } = await renderDeletePage(slug);
+    return reply.code(status).type("text/html").send(html);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    return reply
+      .code(400)
+      .type("text/html")
+      .send(await renderSystemNotice("Delete blocked", notice));
+  }
+});
+
+app.post("/_delete", async (_req, reply) => {
+  const notice = {
+    tone: "error",
+    text: "The home page cannot be deleted.",
+  } satisfies ViewNotice;
+  return reply
+    .code(400)
+    .type("text/html")
+    .send(await renderSystemNotice("Delete blocked", notice));
+});
+
+app.post("/_delete/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  let mutation: DeleteMutation | null;
+
+  try {
+    mutation = await content.deletePage(slug);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    return reply
+      .code(400)
+      .type("text/html")
+      .send(await renderSystemNotice("Delete blocked", notice));
+  }
+
+  if (!mutation) {
+    const tree = await content.tree();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), tree, AUTH_USERNAME));
+  }
+
+  try {
+    await gitCommitFiles(mutation.deletedFsPaths, deleteCommitMessage(mutation));
+  } catch (err) {
+    const notice = {
+      tone: "error",
+      text: `Deleted, but Git commit failed: ${errorMessage(err)}`,
+    } satisfies ViewNotice;
+    return reply
+      .code(500)
+      .type("text/html")
+      .send(await renderSystemNotice("Delete commit failed", notice));
+  }
+
+  return reply.redirect("/", 303);
 });
 
 // Home: a real root index.md if present, else the first top-level page.

@@ -9,6 +9,7 @@ TypeScript + Fastify. No build step — TypeScript runs directly via `tsx`.
 cd app
 npm install
 npm run dev      # http://localhost:4000, auto-reloads on file changes
+npm run mcp      # stdio MCP server for local agent/client integrations
 ```
 
 For the team on your LAN it already binds to `0.0.0.0`, so others reach it at
@@ -43,6 +44,43 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
   `Update <path>.md via web`.
 - Serves attachments from `kb/_assets/` at `/_assets/...`.
 
+## Read-only MCP
+
+The MCP server runs over stdio and exposes the same Markdown knowledge base to
+MCP clients without any write, delete, move, archive, or Git commit tools.
+
+```bash
+cd app
+npm run mcp
+```
+
+Tools:
+
+- `kb_list_pages` — returns the navigation tree. Supports `filter`:
+  `live`, `archived`, or `all`.
+- `kb_get_page` — reads one page by slug. Supports `format`: `parsed` or `raw`.
+- `kb_search` — searches titles, slugs, tags, summaries, and Markdown body text.
+
+Resources:
+
+- `kb://page/{+slug}` — read raw Markdown for a page as `text/markdown`.
+
+Example client config:
+
+```json
+{
+  "mcpServers": {
+    "flux-kb": {
+      "command": "npm",
+      "args": ["run", "mcp", "--prefix", "/Users/elmir.mamedov/dev/flux/app"],
+      "env": {
+        "KB_DIR": "/Users/elmir.mamedov/dev/flux/kb"
+      }
+    }
+  }
+}
+```
+
 ## Scripts
 
 - `npm run dev` — watch + reload.
@@ -51,4 +89,4 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
 
 ## Not yet (later steps)
 
-Search, page create/move/delete flows, and the MCP server.
+Web UI search.

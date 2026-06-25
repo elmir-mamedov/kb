@@ -6,11 +6,13 @@
   "description": "Lean viewer/editor for the markdown knowledge base.",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "mcp": "tsx src/mcp.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fastify": "^4.28.1",
     "gray-matter": "^4.0.3",
     "highlight.js": "^11.10.0",

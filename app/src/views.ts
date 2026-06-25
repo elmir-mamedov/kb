@@ -8,16 +8,27 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function renderTree(nodes: PageNode[], activeSlug: string): string {
+function renderTree(
+  nodes: PageNode[],
+  activeSlug: string,
+  options: { archiveMode?: boolean; dragEnabled?: boolean } = {}
+): string {
   if (nodes.length === 0) return "";
   const items = nodes
     .map((n) => {
       const isActive = n.slug === activeSlug;
       const cls = isActive ? ' class="active"' : "";
-      const children = n.children.length
-        ? `<div class="children">${renderTree(n.children, activeSlug)}</div>`
+      const dragAttrs = options.dragEnabled
+        ? ` draggable="true" data-drag-slug="${escapeHtml(n.slug)}" data-drop-slug="${escapeHtml(n.slug)}"`
         : "";
-      return `<li><a href="/${n.slug}"${cls}>${escapeHtml(n.title)}</a>${children}</li>`;
+      const label =
+        options.archiveMode && !n.archived
+          ? `<span class="tree-label">${escapeHtml(n.title)}</span>`
+          : `<a href="${slugPath(n.slug)}"${cls}${dragAttrs}>${escapeHtml(n.title)}</a>`;
+      const children = n.children.length
+        ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
+        : "";
+      return `<li data-tree-slug="${escapeHtml(n.slug)}">${label}${children}</li>`;
     })
     .join("");
   return `<ul>${items}</ul>`;
@@ -48,6 +59,10 @@ export interface PageView {
   contentHtml: string;
   updated?: string | null;
   canEdit?: boolean;
+  isArchived?: boolean;
+  archivedAt?: string;
+  isArchiveView?: boolean;
+  notice?: ViewNotice;
   username?: string | null;
 }
 
@@ -63,6 +78,26 @@ export interface EditView {
   username?: string | null;
 }
 
+export interface ArchiveView {
+  siteTitle: string;
+  tree: PageNode[];
+  archiveTree: PageNode[];
+  titles: Map<string, string>;
+  username?: string | null;
+}
+
+export interface DeleteView {
+  siteTitle: string;
+  tree: PageNode[];
+  activeSlug: string;
+  titles: Map<string, string>;
+  title: string;
+  fsPath: string;
+  isSection: boolean;
+  affectedCount: number;
+  username?: string | null;
+}
+
 export interface LoginView {
   siteTitle: string;
   error?: string;
@@ -70,9 +105,36 @@ export interface LoginView {
   username?: string;
 }
 
+export interface ViewNotice {
+  tone: "error" | "success" | "warning";
+  text: string;
+}
+
 function slugPath(slug: string): string {
   if (!slug) return "/";
   return "/" + slug.split("/").map(encodeURIComponent).join("/");
+}
+
+function sidebarHtml(
+  siteTitle: string,
+  tree: PageNode[],
+  activeSlug: string,
+  isArchiveView = false
+): string {
+  const archiveCls = isArchiveView ? " active" : "";
+  const rootDrop = isArchiveView
+    ? ""
+    : `<div class="root-drop" data-drop-root="true">Top level</div>
+  <div class="move-error" data-move-error hidden></div>`;
+  return `<aside class="sidebar">
+  <a class="brand" href="/">${escapeHtml(siteTitle)}</a>
+  <form class="sidebar-form" method="post" action="/_create">
+    <button class="sidebar-link sidebar-button" type="submit">Create</button>
+  </form>
+  <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
+  ${rootDrop}
+  <nav class="tree">${renderTree(tree, activeSlug, { dragEnabled: !isArchiveView })}</nav>
+</aside>`;
 }
 
 function sessionActions(username?: string | null): string {
@@ -80,6 +142,12 @@ function sessionActions(username?: string | null): string {
   return `<form class="session-actions" method="post" action="/_logout">
     <span class="session-user">${escapeHtml(username)}</span>
     <button class="button secondary" type="submit">Log out</button>
+  </form>`;
+}
+
+function actionForm(actionPrefix: string, slug: string, label: string, variant: string): string {
+  return `<form class="action-form" method="post" action="${actionPrefix}${slugPath(slug)}">
+    <button class="button ${variant}" type="submit">${escapeHtml(label)}</button>
   </form>`;
 }
 
@@ -94,7 +162,26 @@ export function layout(v: PageView): string {
     v.canEdit === false
       ? ""
       : `<a class="button secondary" href="/_edit${slugPath(v.activeSlug)}">Edit</a>`;
+  const archiveAction =
+    v.canEdit === false || v.isArchived || !v.activeSlug
+      ? ""
+      : actionForm("/_archive", v.activeSlug, "Archive", "danger");
+  const restoreAction =
+    v.isArchived && v.activeSlug
+      ? actionForm("/_restore", v.activeSlug, "Restore", "primary")
+      : "";
+  const deleteAction =
+    v.canEdit === false || !v.activeSlug
+      ? ""
+      : `<a class="button danger" href="/_delete${slugPath(v.activeSlug)}">Delete</a>`;
   const authActions = sessionActions(v.username);
+  const archivedAt = v.archivedAt ? ` on ${escapeHtml(v.archivedAt)}` : "";
+  const archivedBanner = v.isArchived
+    ? `<div class="notice archived"><strong>Archived.</strong> This page is hidden from normal navigation${archivedAt}.</div>`
+    : "";
+  const notice = v.notice
+    ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -105,10 +192,7 @@ export function layout(v: PageView): string {
 <style>${STYLES}</style>
 </head>
 <body>
-<aside class="sidebar">
-  <a class="brand" href="/">${escapeHtml(v.siteTitle)}</a>
-  <nav class="tree">${renderTree(v.tree, v.activeSlug)}</nav>
-</aside>
+${sidebarHtml(v.siteTitle, v.tree, v.activeSlug, v.isArchiveView)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
   <header class="page-head">
@@ -116,12 +200,59 @@ export function layout(v: PageView): string {
       <h1>${escapeHtml(v.title)}</h1>
       <div class="meta">${tags}${updated}</div>
     </div>
-    <div class="actions">${editLink}${authActions}</div>
+    <div class="actions">${editLink}${archiveAction}${deleteAction}${restoreAction}${authActions}</div>
   </header>
+  ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
 </main>
+${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
 </body>
 </html>`;
+}
+
+export function archiveLayout(v: ArchiveView): string {
+  const archiveHtml = v.archiveTree.length
+    ? `<div class="archive-browser tree">${renderTree(v.archiveTree, "", {
+        archiveMode: true,
+      })}</div>`
+    : "<p>No archived pages.</p>";
+
+  return layout({
+    siteTitle: v.siteTitle,
+    tree: v.tree,
+    activeSlug: "",
+    titles: v.titles,
+    title: "Archive",
+    contentHtml: archiveHtml,
+    canEdit: false,
+    isArchiveView: true,
+    username: v.username,
+  });
+}
+
+export function deleteLayout(v: DeleteView): string {
+  const pagePath = slugPath(v.activeSlug);
+  const affected =
+    v.isSection && v.affectedCount > 1
+      ? `<p>This section delete will remove ${v.affectedCount} Markdown pages from this subtree.</p>`
+      : "";
+
+  return layout({
+    siteTitle: v.siteTitle,
+    tree: v.tree,
+    activeSlug: v.activeSlug,
+    titles: v.titles,
+    title: `Delete ${v.title}`,
+    contentHtml: `<div class="notice error"><strong>Permanent delete.</strong> This cannot be undone from the web UI.</div>
+<p>Delete <strong>${escapeHtml(v.title)}</strong> at <code>${escapeHtml(pagePath)}</code>?</p>
+${affected}
+<form class="confirm-actions" method="post" action="/_delete${pagePath}">
+  <button class="button danger" type="submit">Delete</button>
+  <a class="button secondary" href="${pagePath}">Cancel</a>
+</form>`,
+    canEdit: false,
+    username: v.username,
+  });
 }
 
 export function editLayout(v: EditView): string {
@@ -142,10 +273,7 @@ export function editLayout(v: EditView): string {
 <style>${STYLES}</style>
 </head>
 <body>
-<aside class="sidebar">
-  <a class="brand" href="/">${escapeHtml(v.siteTitle)}</a>
-  <nav class="tree">${renderTree(v.tree, v.activeSlug)}</nav>
-</aside>
+${sidebarHtml(v.siteTitle, v.tree, v.activeSlug)}
 <main class="content editor-content">
   ${breadcrumb(v.activeSlug, v.titles)}
   <header class="page-head">
@@ -168,6 +296,7 @@ export function editLayout(v: EditView): string {
     </div>
   </form>
 </main>
+<script>${MOVE_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -223,6 +352,121 @@ export function notFound(
   });
 }
 
+const MOVE_SCRIPT = `
+(() => {
+  const dragItems = Array.from(document.querySelectorAll("[data-drag-slug]"));
+  const dropTargets = Array.from(
+    document.querySelectorAll("[data-drop-slug], [data-drop-root]")
+  );
+  const errorEl = document.querySelector("[data-move-error]");
+  let sourceSlug = "";
+
+  function sourceParent(slug) {
+    const parts = slug.split("/");
+    parts.pop();
+    return parts.join("/");
+  }
+
+  function showError(message) {
+    if (!errorEl) return;
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+    window.setTimeout(() => {
+      errorEl.hidden = true;
+    }, 5000);
+  }
+
+  function clearTargets() {
+    for (const target of dropTargets) {
+      target.classList.remove("drop-target-active");
+    }
+  }
+
+  function invalidDrop(target) {
+    if (!sourceSlug) return true;
+    if (target.hasAttribute("data-drop-root")) {
+      return !sourceSlug.includes("/");
+    }
+
+    const targetSlug = target.getAttribute("data-drop-slug") || "";
+    if (!targetSlug) return true;
+    if (targetSlug === sourceSlug) return true;
+    if (targetSlug.startsWith(sourceSlug + "/")) return true;
+    if (targetSlug === sourceParent(sourceSlug)) return true;
+    return false;
+  }
+
+  for (const item of dragItems) {
+    item.addEventListener("dragstart", (event) => {
+      sourceSlug = item.getAttribute("data-drag-slug") || "";
+      item.classList.add("drag-source");
+      document.body.classList.add("dragging-page");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", sourceSlug);
+      }
+    });
+
+    item.addEventListener("dragend", () => {
+      sourceSlug = "";
+      item.classList.remove("drag-source");
+      document.body.classList.remove("dragging-page");
+      clearTargets();
+    });
+  }
+
+  for (const target of dropTargets) {
+    target.addEventListener("dragover", (event) => {
+      if (invalidDrop(target)) {
+        target.classList.remove("drop-target-active");
+        return;
+      }
+
+      event.preventDefault();
+      target.classList.add("drop-target-active");
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+    });
+
+    target.addEventListener("dragleave", () => {
+      target.classList.remove("drop-target-active");
+    });
+
+    target.addEventListener("drop", async (event) => {
+      if (invalidDrop(target)) return;
+
+      event.preventDefault();
+      clearTargets();
+
+      const isRoot = target.hasAttribute("data-drop-root");
+      const targetSlug = isRoot ? "" : target.getAttribute("data-drop-slug") || "";
+      const body = new URLSearchParams({
+        sourceSlug,
+        targetKind: isRoot ? "root" : "page",
+        targetSlug,
+      });
+
+      try {
+        const response = await fetch("/_move", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body,
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          showError(result.error || "Move failed.");
+          return;
+        }
+        window.location.href = result.url;
+      } catch {
+        showError("Move failed.");
+      }
+    });
+  }
+})();
+`;
+
 const STYLES = `
 :root{
   --bg:#fff; --fg:#1f2328; --muted:#6b7280; --line:#e5e7eb;
@@ -245,11 +489,37 @@ a:hover{text-decoration:underline}
 .brand{display:block; font-weight:700; font-size:15px; color:var(--fg);
   margin-bottom:16px; letter-spacing:.2px}
 .brand:hover{text-decoration:none}
+.sidebar-form{margin:0}
+.sidebar-link{
+  display:block; margin:0 0 14px; padding:4px 6px; border-radius:6px;
+  color:#374151; font-size:14px; font-weight:600;
+}
+.sidebar-link:hover{background:#eef0f3; text-decoration:none}
+.sidebar-link.active{background:#e7efff; color:var(--accent)}
+.sidebar-button{
+  width:100%; border:0; background:transparent; text-align:left;
+  font:600 14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  cursor:pointer;
+}
+.root-drop{
+  margin:0 0 14px; padding:5px 6px; border:1px dashed var(--line);
+  border-radius:6px; color:var(--muted); font-size:13px; font-weight:600;
+}
+.move-error{
+  margin:0 0 14px; padding:8px 10px; border:1px solid #fecaca;
+  border-radius:6px; background:#fef2f2; color:#991b1b; font-size:13px;
+}
 .tree ul{list-style:none; margin:0; padding:0}
 .tree .children{margin-left:12px; border-left:1px solid var(--line); padding-left:8px}
-.tree a{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px}
+.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px}
+.tree-label{color:var(--muted); font-weight:600}
 .tree a:hover{background:#eef0f3; text-decoration:none}
 .tree a.active{background:#e7efff; color:var(--accent); font-weight:600}
+.tree a[draggable="true"]{cursor:grab}
+.tree a.drag-source{opacity:.55}
+.tree a.drop-target-active,.root-drop.drop-target-active{
+  outline:2px solid #93c5fd; outline-offset:1px; background:#e7efff;
+}
 .content{flex:1; padding:32px 40px; max-width:calc(var(--maxw) + 80px); width:100%}
 .crumbs{color:var(--muted); font-size:13px; margin-bottom:18px}
 .crumbs .sep{color:var(--line); margin:0 2px}
@@ -258,7 +528,9 @@ a:hover{text-decoration:underline}
 .meta{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:24px}
 .tag{background:#eef0f3; color:#374151; font-size:12px; padding:2px 8px; border-radius:999px}
 .updated{color:var(--muted); font-size:12px; margin-left:auto}
-.actions{display:flex; gap:8px; flex:0 0 auto}
+.actions{display:flex; gap:8px; flex:0 0 auto; align-items:center; flex-wrap:wrap}
+.action-form{display:inline-flex; margin:0}
+.confirm-actions{display:flex; gap:8px; align-items:center; margin-top:16px}
 .session-actions{display:inline-flex; align-items:center; gap:8px; margin:0}
 .session-user{color:var(--muted); font-size:13px}
 .button{
@@ -271,6 +543,8 @@ a:hover{text-decoration:underline}
 .button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
 .button.secondary{background:#fff; color:#374151}
 .button.secondary:hover{background:#f7f8fa}
+.button.danger{background:#fff; border-color:#fecaca; color:#991b1b}
+.button.danger:hover{background:#fef2f2}
 .prose{max-width:var(--maxw)}
 .prose h1,.prose h2,.prose h3{line-height:1.25; margin-top:1.6em}
 .prose h2{font-size:22px; border-bottom:1px solid var(--line); padding-bottom:.2em}
@@ -304,6 +578,7 @@ a:hover{text-decoration:underline}
 }
 .notice.error{border-color:#fecaca; background:#fef2f2; color:#991b1b}
 .notice.success{border-color:#bbf7d0; background:#f0fdf4; color:#166534}
+.notice.warning,.notice.archived{border-color:#fde68a; background:#fffbeb; color:#92400e}
 .path-label{color:var(--muted); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .login-page{
   min-height:100vh; align-items:center; justify-content:center; padding:24px;
