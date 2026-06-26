@@ -25,13 +25,31 @@ function renderTree(
         options.archiveMode && !n.archived
           ? `<span class="tree-label">${escapeHtml(n.title)}</span>`
           : `<a href="${slugPath(n.slug)}"${cls}${dragAttrs}>${escapeHtml(n.title)}</a>`;
+      const row = options.dragEnabled
+        ? `<div class="tree-row">${label}${treeMenu(n.slug)}</div>`
+        : label;
       const children = n.children.length
         ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
         : "";
-      return `<li data-tree-slug="${escapeHtml(n.slug)}">${label}${children}</li>`;
+      return `<li data-tree-slug="${escapeHtml(n.slug)}">${row}${children}</li>`;
     })
     .join("");
   return `<ul>${items}</ul>`;
+}
+
+/** Per-page ⋯ menu: create a child (auto-promoting a leaf), edit, or delete. */
+function treeMenu(slug: string): string {
+  return `<details class="tree-menu">
+    <summary aria-label="Page actions">⋯</summary>
+    <div class="tree-menu-pop">
+      <form method="post" action="/_create">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(slug)}" />
+        <button type="submit">New child page</button>
+      </form>
+      <a href="/_edit${slugPath(slug)}">Edit</a>
+      <a href="/_delete${slugPath(slug)}">Delete</a>
+    </div>
+  </details>`;
 }
 
 function breadcrumb(slug: string, titles: Map<string, string>): string {
@@ -196,6 +214,12 @@ function sessionActions(username?: string | null): string {
   </form>`;
 }
 
+/** Username + Log out pinned to the top-right corner of the page. */
+function sessionCorner(username?: string | null): string {
+  const actions = sessionActions(username);
+  return actions ? `<div class="session-corner">${actions}</div>` : "";
+}
+
 function actionForm(actionPrefix: string, slug: string, label: string, variant: string): string {
   return `<form class="action-form" method="post" action="${actionPrefix}${slugPath(slug)}">
     <button class="button ${variant}" type="submit">${escapeHtml(label)}</button>
@@ -209,6 +233,7 @@ export function layout(v: PageView): string {
   const updated = v.updated
     ? `<div class="updated">Updated ${escapeHtml(v.updated)}</div>`
     : "";
+  const metaInner = `${tags ? `<div class="tags">${tags}</div>` : ""}${updated}`;
   const editLink =
     v.canEdit === false
       ? ""
@@ -225,7 +250,6 @@ export function layout(v: PageView): string {
     v.canEdit === false || !v.activeSlug
       ? ""
       : `<a class="button danger" href="/_delete${slugPath(v.activeSlug)}">Delete</a>`;
-  const authActions = sessionActions(v.username);
   const archivedAt = v.archivedAt ? ` on ${escapeHtml(v.archivedAt)}` : "";
   const archivedBanner = v.isArchived
     ? `<div class="notice archived"><strong>Archived.</strong> This page is hidden from normal navigation${archivedAt}.</div>`
@@ -243,15 +267,16 @@ export function layout(v: PageView): string {
 <style>${STYLES}</style>
 </head>
 <body>
+${sessionCorner(v.username)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchiveView)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
   <header class="page-head">
     <div>
       <h1>${escapeHtml(v.title)}</h1>
-      <div class="meta">${tags}${updated}</div>
+      <div class="meta">${metaInner}</div>
     </div>
-    <div class="actions">${editLink}${archiveAction}${deleteAction}${restoreAction}${authActions}</div>
+    <div class="actions">${editLink}${archiveAction}${deleteAction}${restoreAction}</div>
   </header>
   ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
@@ -339,6 +364,7 @@ export function editLayout(v: EditView): string {
 <style>${STYLES}</style>
 </head>
 <body>
+${sessionCorner(v.username)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
 <main class="content editor-content">
   ${breadcrumb(v.activeSlug, v.titles)}
@@ -349,7 +375,6 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
     </div>
     <div class="actions">
       <a class="button secondary" href="${pagePath}">Cancel</a>
-      ${sessionActions(v.username)}
     </div>
   </header>
   ${error}${notice}
@@ -452,12 +477,12 @@ export function spacesLayout(v: SpacesView): string {
 <style>${STYLES}</style>
 </head>
 <body class="spaces-page">
+${sessionCorner(v.username)}
 <main class="spaces-main">
   <header class="spaces-head">
     <h1>${escapeHtml(v.siteTitle)}</h1>
     <div class="actions">
       <a class="button secondary" href="/_archive">Archive</a>
-      ${sessionActions(v.username)}
     </div>
   </header>
   ${notice}
@@ -583,6 +608,21 @@ const MOVE_SCRIPT = `
       }
     });
   }
+
+  const menus = Array.from(document.querySelectorAll(".tree-menu"));
+  for (const menu of menus) {
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      for (const other of menus) {
+        if (other !== menu) other.open = false;
+      }
+    });
+  }
+  document.addEventListener("click", (event) => {
+    for (const menu of menus) {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    }
+  });
 })();
 `;
 
@@ -601,7 +641,7 @@ body{
 a{color:var(--accent); text-decoration:none}
 a:hover{text-decoration:underline}
 .sidebar{
-  width:260px; flex:0 0 260px; background:var(--sidebar);
+  width:300px; flex:0 0 300px; background:var(--sidebar);
   border-right:1px solid var(--line); padding:20px 16px; position:sticky; top:0;
   height:100vh; overflow:auto;
 }
@@ -630,7 +670,7 @@ a:hover{text-decoration:underline}
 }
 .tree ul{list-style:none; margin:0; padding:0}
 .tree .children{margin-left:12px; border-left:1px solid var(--line); padding-left:8px}
-.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px}
+.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px; overflow-wrap:anywhere}
 .tree-label{color:var(--muted); font-weight:600}
 .tree a:hover{background:#eef0f3; text-decoration:none}
 .tree a.active{background:#e7efff; color:var(--accent); font-weight:600}
@@ -639,19 +679,57 @@ a:hover{text-decoration:underline}
 .tree a.drop-target-active,.root-drop.drop-target-active{
   outline:2px solid #93c5fd; outline-offset:1px; background:#e7efff;
 }
+.tree-row{position:relative; display:flex; align-items:center}
+.tree-row>a{
+  flex:1; min-width:0;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
+}
+.tree-menu{position:absolute; right:0; top:0; flex:0 0 auto}
+.tree-menu summary{
+  list-style:none; cursor:pointer; user-select:none; opacity:0; pointer-events:none;
+  display:flex; align-items:center; justify-content:flex-end;
+  height:29px; padding:0 6px 0 24px; border-radius:6px;
+  color:var(--muted); font-size:14px; line-height:1;
+  background:linear-gradient(to right, rgba(247,248,250,0) 0, var(--sidebar) 18px);
+}
+.tree-menu summary::-webkit-details-marker{display:none}
+.tree-row:hover .tree-menu summary,.tree-row:focus-within .tree-menu summary,.tree-menu[open] summary{
+  opacity:1; pointer-events:auto;
+}
+.tree-row:hover .tree-menu summary,.tree-row:focus-within .tree-menu summary{
+  background:linear-gradient(to right, rgba(238,240,243,0) 0, #eef0f3 18px);
+}
+.tree-row:has(>a.active) .tree-menu summary{
+  background:linear-gradient(to right, rgba(231,239,255,0) 0, #e7efff 18px);
+}
+.tree-menu-pop{
+  position:absolute; right:0; top:100%; z-index:10; min-width:150px;
+  background:#fff; border:1px solid var(--line); border-radius:6px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08); padding:4px; display:flex; flex-direction:column;
+}
+.tree-menu-pop form{margin:0}
+.tree-menu-pop a,.tree-menu-pop button{
+  display:block; width:100%; text-align:left; border:0; background:transparent;
+  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  cursor:pointer; font-family:inherit;
+}
+.tree-menu-pop a:hover,.tree-menu-pop button:hover{background:#eef0f3; text-decoration:none}
 .content{flex:1; padding:32px 40px; max-width:calc(var(--maxw) + 80px); width:100%}
 .crumbs{color:var(--muted); font-size:13px; margin-bottom:18px}
 .crumbs .sep{color:var(--line); margin:0 2px}
 .page-head{display:flex; justify-content:space-between; gap:20px; align-items:flex-start}
 .page-head h1{font-size:30px; line-height:1.2; margin:0 0 8px}
-.meta{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:24px}
+.meta{margin:0 0 24px}
+.tags{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
 .tag{background:#eef0f3; color:#374151; font-size:12px; padding:2px 8px; border-radius:999px}
-.updated{color:var(--muted); font-size:12px; margin-left:auto}
+.updated{color:var(--muted); font-size:12px}
+.tags + .updated{margin-top:8px}
 .actions{display:flex; gap:8px; flex:0 0 auto; align-items:center; flex-wrap:wrap}
 .action-form{display:inline-flex; margin:0}
 .confirm-actions{display:flex; gap:8px; align-items:center; margin-top:16px}
 .session-actions{display:inline-flex; align-items:center; gap:8px; margin:0}
 .session-user{color:var(--muted); font-size:13px}
+.session-corner{position:fixed; top:12px; right:16px; z-index:50}
 .button{
   display:inline-flex; align-items:center; justify-content:center; min-height:34px;
   border:1px solid var(--line); border-radius:6px; padding:5px 12px;

@@ -450,7 +450,11 @@ app.post("/_create", async (req, reply) => {
   }
 
   try {
-    await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
+    if (mutation.changedFsPaths) {
+      await git.commitMovedPaths(mutation.changedFsPaths, createCommitMessage(mutation));
+    } else {
+      await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
+    }
   } catch (err) {
     const { html } = await renderEditPage(mutation.slug, {
       error: `Created, but Git commit failed: ${errorMessage(err)}`,

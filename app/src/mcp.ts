@@ -373,11 +373,11 @@ server.registerTool(
   {
     title: "Create KB Page",
     description:
-      "Create a new page from a title and Markdown body inside a space or section. The title becomes the page slug; pass an empty parent only to create a top-level page (use kb_create_space for a new space).",
+      "Create a new page from a title and Markdown body inside any page. The title becomes the page slug; a leaf-page parent is auto-promoted into a section. Pass an empty parent only to create a top-level page (use kb_create_space for a new space).",
     inputSchema: {
       parent: z
         .string()
-        .describe("Parent space or section slug, e.g. flux/runbooks. Use an empty string for the root."),
+        .describe("Parent page slug, e.g. flux/runbooks. A leaf parent becomes a section. Use an empty string for the root."),
       title: z.string().min(1).describe("Page title; also slugified into the filename."),
       body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
       tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
@@ -391,10 +391,10 @@ server.registerTool(
   async ({ parent, title, body, tags, summary }) => {
     try {
       const mutation = await content.createPage(parent ?? "", title, body ?? "", { tags, summary });
-      const commit = await git.commitFiles(
-        [mutation.fsPath],
-        `Create ${git.kbRelPath(mutation.fsPath)} via mcp`
-      );
+      const message = `Create ${git.kbRelPath(mutation.fsPath)} via mcp`;
+      const commit = mutation.changedFsPaths
+        ? await git.commitMovedPaths(mutation.changedFsPaths, message)
+        : await git.commitFiles([mutation.fsPath], message);
       return textResult({
         created: true,
         slug: mutation.slug,

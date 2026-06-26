@@ -51,6 +51,15 @@ export interface ArchiveMutation {
 export interface CreatePageMutation {
   slug: string;
   fsPath: string;
+  /** When a leaf parent was promoted to a section, the paths the commit must cover. */
+  changedFsPaths?: string[];
+}
+
+/** A pending leaf→section promotion: move `from` (foo.md) to `to` (foo/index.md). */
+interface LeafPromotion {
+  from: string;
+  to: string;
+  dir: string;
 }
 
 export interface DeletePreview {
@@ -269,16 +278,16 @@ export class Content {
     const cleanParent = cleanSlug(parentSlug);
     let parentDir = this.root;
     let parentPrefix = "";
+    let promotion: LeafPromotion | null = null;
 
     if (cleanParent) {
       const parentFsPath = await this.resolve(cleanParent);
       if (!parentFsPath) {
         throw new Error("The destination space or section does not exist.");
       }
-      if (!this.isSectionFsPath(parentFsPath)) {
-        throw new Error("Pages can only be created inside a space or section.");
-      }
-      parentDir = path.dirname(parentFsPath);
+      const resolved = await this.sectionDirFor(parentFsPath);
+      parentDir = resolved.dir;
+      promotion = resolved.conversion;
       parentPrefix = cleanParent;
     }
 
@@ -288,8 +297,11 @@ export class Content {
     const raw = matter.stringify(`# ${title}\n\n`, { title });
 
     parsePage(raw, fsPath);
+    if (promotion) await this.applyPromotion(promotion);
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
-    return { slug, fsPath };
+    return promotion
+      ? { slug, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
+      : { slug, fsPath };
   }
 
   /** Create a finished page from a title and body inside a space/section (or root when parent is ""). */
@@ -302,16 +314,16 @@ export class Content {
     const cleanParent = cleanSlug(parentSlug);
     let parentDir = this.root;
     let parentPrefix = "";
+    let promotion: LeafPromotion | null = null;
 
     if (cleanParent) {
       const parentFsPath = await this.resolve(cleanParent);
       if (!parentFsPath) {
         throw new Error("The destination space or section does not exist.");
       }
-      if (!this.isSectionFsPath(parentFsPath)) {
-        throw new Error("Pages can only be created inside a space or section.");
-      }
-      parentDir = path.dirname(parentFsPath);
+      const resolved = await this.sectionDirFor(parentFsPath);
+      parentDir = resolved.dir;
+      promotion = resolved.conversion;
       parentPrefix = cleanParent;
     }
 
@@ -335,8 +347,11 @@ export class Content {
     const raw = matter.stringify(content, data);
 
     parsePage(raw, fsPath);
+    if (promotion) await this.applyPromotion(promotion);
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
-    return { slug, fsPath };
+    return promotion
+      ? { slug, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
+      : { slug, fsPath };
   }
 
   /** Create a new space: a top-level folder with an index.md home page. */
@@ -422,7 +437,7 @@ export class Content {
 
     let parentDir = this.root;
     let parentSlug = "";
-    let targetConversion: { from: string; to: string; dir: string } | null = null;
+    let targetConversion: LeafPromotion | null = null;
 
     if (cleanTarget) {
       const targetFsPath = await this.resolve(cleanTarget);
@@ -430,23 +445,9 @@ export class Content {
         throw new Error("The destination page does not exist.");
       }
 
-      if (this.isSectionFsPath(targetFsPath)) {
-        parentDir = path.dirname(targetFsPath);
-      } else {
-        const targetDir = path.join(
-          path.dirname(targetFsPath),
-          path.basename(targetFsPath, ".md")
-        );
-        if (await exists(targetDir)) {
-          throw new Error("The destination already has a folder at that path.");
-        }
-        parentDir = targetDir;
-        targetConversion = {
-          from: targetFsPath,
-          to: path.join(targetDir, "index.md"),
-          dir: targetDir,
-        };
-      }
+      const resolved = await this.sectionDirFor(targetFsPath);
+      parentDir = resolved.dir;
+      targetConversion = resolved.conversion;
       parentSlug = cleanTarget;
     }
 
@@ -484,8 +485,7 @@ export class Content {
     ];
 
     if (targetConversion) {
-      await fs.mkdir(targetConversion.dir);
-      await fs.rename(targetConversion.from, targetConversion.to);
+      await this.applyPromotion(targetConversion);
     }
 
     await fs.mkdir(parentDir, { recursive: true });
@@ -666,6 +666,36 @@ export class Content {
 
   private isSectionFsPath(fsPath: string): boolean {
     return path.basename(fsPath) === "index.md" && path.dirname(fsPath) !== this.root;
+  }
+
+  /**
+   * Resolve where new children of `parentFsPath` should live. A section's own
+   * folder is returned as-is; a leaf page yields a pending conversion that
+   * promotes `foo.md` to `foo/index.md` (apply it with applyPromotion).
+   */
+  private async sectionDirFor(
+    parentFsPath: string
+  ): Promise<{ dir: string; conversion: LeafPromotion | null }> {
+    if (this.isSectionFsPath(parentFsPath)) {
+      return { dir: path.dirname(parentFsPath), conversion: null };
+    }
+    const targetDir = path.join(
+      path.dirname(parentFsPath),
+      path.basename(parentFsPath, ".md")
+    );
+    if (await exists(targetDir)) {
+      throw new Error("The destination already has a folder at that path.");
+    }
+    return {
+      dir: targetDir,
+      conversion: { from: parentFsPath, to: path.join(targetDir, "index.md"), dir: targetDir },
+    };
+  }
+
+  /** Promote a leaf page into a section: create its folder and move it to index.md. */
+  private async applyPromotion(conversion: LeafPromotion): Promise<void> {
+    await fs.mkdir(conversion.dir);
+    await fs.rename(conversion.from, conversion.to);
   }
 
   private async updateArchiveMetadata(

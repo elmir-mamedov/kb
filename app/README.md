@@ -82,7 +82,7 @@ Resources:
 
 - `kb://page/{+slug}` — read raw Markdown for a page as `text/markdown`.
 
-Example client config:
+Example Claude / Claude Desktop config:
 
 ```json
 {
@@ -96,6 +96,17 @@ Example client config:
     }
   }
 }
+```
+
+Example Codex CLI config (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.flux-kb]
+command = "/Users/elmir.mamedov/dev/flux/app/node_modules/.bin/tsx"
+args = ["/Users/elmir.mamedov/dev/flux/app/src/mcp.ts"]
+
+[mcp_servers.flux-kb.env]
+KB_DIR = "/Users/elmir.mamedov/dev/flux/kb"
 ```
 
 ## Scripts
