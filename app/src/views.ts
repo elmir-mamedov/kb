@@ -11,7 +11,7 @@ export function escapeHtml(s: string): string {
 function renderTree(
   nodes: PageNode[],
   activeSlug: string,
-  options: { archiveMode?: boolean; dragEnabled?: boolean } = {}
+  options: { archiveMode?: boolean; dragEnabled?: boolean; collapsible?: boolean } = {}
 ): string {
   if (nodes.length === 0) return "";
   const items = nodes
@@ -25,10 +25,18 @@ function renderTree(
         options.archiveMode && !n.archived
           ? `<span class="tree-label">${escapeHtml(n.title)}</span>`
           : `<a href="${slugPath(n.slug)}"${cls}${dragAttrs}>${escapeHtml(n.title)}</a>`;
+      const hasChildren = n.children.length > 0;
+      // Expand/collapse control for nodes with children; a spacer keeps leaf
+      // labels aligned with their siblings' carets.
+      const toggle = options.collapsible
+        ? hasChildren
+          ? `<button type="button" class="tree-toggle" aria-label="Toggle subpages" aria-expanded="true"></button>`
+          : `<span class="tree-toggle-spacer"></span>`
+        : "";
       const row = options.dragEnabled
-        ? `<div class="tree-row">${label}${treeMenu(n.slug)}</div>`
+        ? `<div class="tree-row">${toggle}${label}${treeMenu(n.slug)}</div>`
         : label;
-      const children = n.children.length
+      const children = hasChildren
         ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
         : "";
       return `<li data-tree-slug="${escapeHtml(n.slug)}">${row}${children}</li>`;
@@ -44,7 +52,7 @@ function treeMenu(slug: string): string {
     <div class="tree-menu-pop">
       <form method="post" action="/_create">
         <input type="hidden" name="parentSlug" value="${escapeHtml(slug)}" />
-        <button type="submit">New child page</button>
+        <button type="submit">New page</button>
       </form>
       <a href="/_edit${slugPath(slug)}">Edit</a>
       <a href="/_delete${slugPath(slug)}">Delete</a>
@@ -202,7 +210,10 @@ function sidebarHtml(
   </form>
   <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
   ${spaceRootDrop}
-  <nav class="tree">${renderTree(tree, activeSlug, { dragEnabled: !isArchiveView })}</nav>
+  <nav class="tree">${renderTree(tree, activeSlug, {
+    dragEnabled: !isArchiveView,
+    collapsible: !isArchiveView,
+  })}</nav>
 </aside>`;
 }
 
@@ -623,6 +634,43 @@ const MOVE_SCRIPT = `
       if (menu.open && !menu.contains(event.target)) menu.open = false;
     }
   });
+
+  // Collapsible sidebar tree. Collapsed slugs persist in localStorage so the
+  // chosen layout survives the full-page reloads that navigation triggers.
+  const COLLAPSE_KEY = "kb:collapsed";
+  function loadCollapsed() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]"));
+    } catch {
+      return new Set();
+    }
+  }
+  function saveCollapsed(set) {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(Array.from(set)));
+    } catch {}
+  }
+
+  const collapsed = loadCollapsed();
+  const treeItems = Array.from(document.querySelectorAll(".tree li[data-tree-slug]"));
+  for (const li of treeItems) {
+    const toggle = li.querySelector(":scope > .tree-row .tree-toggle");
+    if (!toggle) continue;
+    const slug = li.getAttribute("data-tree-slug") || "";
+    if (collapsed.has(slug)) {
+      li.classList.add("collapsed");
+      toggle.setAttribute("aria-expanded", "false");
+    }
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const isCollapsed = li.classList.toggle("collapsed");
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+      if (isCollapsed) collapsed.add(slug);
+      else collapsed.delete(slug);
+      saveCollapsed(collapsed);
+    });
+  }
 })();
 `;
 
@@ -679,6 +727,16 @@ a:hover{text-decoration:underline}
 .tree a.drop-target-active,.root-drop.drop-target-active{
   outline:2px solid #93c5fd; outline-offset:1px; background:#e7efff;
 }
+.tree-toggle{
+  flex:0 0 auto; width:18px; height:24px; margin:0; padding:0; border:0;
+  background:transparent; cursor:pointer; color:var(--muted);
+  display:flex; align-items:center; justify-content:center; line-height:1;
+}
+.tree-toggle::before{content:"\\25B6"; font-size:9px; transition:transform .12s ease; transform:rotate(90deg)}
+.tree li.collapsed > .tree-row .tree-toggle::before{transform:rotate(0deg)}
+.tree-toggle:hover{color:var(--fg)}
+.tree-toggle-spacer{flex:0 0 auto; width:18px}
+.tree li.collapsed > .children{display:none}
 .tree-row{position:relative; display:flex; align-items:center}
 .tree-row>a{
   flex:1; min-width:0;

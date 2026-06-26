@@ -268,8 +268,18 @@ export class Content {
     const fsPath = await this.resolve(slug);
     if (!fsPath) return null;
     parsePage(raw, fsPath);
-    await fs.writeFile(fsPath, raw, "utf8");
-    return { slug: cleanSlug(slug), raw, fsPath };
+
+    // Browsers submit <textarea> content with CRLF newlines, so normalise to LF
+    // (the repo convention) before comparing and writing. A save that changes
+    // nothing must stay a true no-op: no rewrite, no spurious "updated" commit.
+    const next = normalizeEol(raw);
+    const existing = await fs.readFile(fsPath, "utf8");
+    if (normalizeEol(existing) === next) {
+      return { slug: cleanSlug(slug), raw: existing, fsPath };
+    }
+
+    await fs.writeFile(fsPath, next, "utf8");
+    return { slug: cleanSlug(slug), raw: next, fsPath };
   }
 
   /** Create a root-level draft page with a unique slug. */
@@ -735,6 +745,11 @@ export class Content {
 
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
+}
+
+/** Normalise CRLF/CR line endings to LF so saves compare and store consistently. */
+function normalizeEol(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
 }
 
 function slugify(value: string): string {

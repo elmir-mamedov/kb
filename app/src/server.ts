@@ -692,7 +692,18 @@ app.post("/_delete/*", async (req, reply) => {
       .send(await renderSystemNotice("Delete commit failed", notice));
   }
 
-  return reply.redirect("/", 303);
+  // Land on the nearest surviving ancestor (parent page or space) rather than
+  // bouncing all the way out to the spaces home.
+  let destination = "/";
+  let ancestor = mutation.slug.split("/").slice(0, -1).join("/");
+  while (ancestor) {
+    if (await content.resolve(ancestor)) {
+      destination = pagePath(ancestor);
+      break;
+    }
+    ancestor = ancestor.split("/").slice(0, -1).join("/");
+  }
+  return reply.redirect(destination, 303);
 });
 
 // Home: the spaces landing grid (each top-level folder is a space).
