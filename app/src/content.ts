@@ -292,6 +292,53 @@ export class Content {
     return { slug, fsPath };
   }
 
+  /** Create a finished page from a title and body inside a space/section (or root when parent is ""). */
+  async createPage(
+    parentSlug: string,
+    title: string,
+    body = "",
+    opts: { tags?: string[]; summary?: string } = {}
+  ): Promise<CreatePageMutation> {
+    const cleanParent = cleanSlug(parentSlug);
+    let parentDir = this.root;
+    let parentPrefix = "";
+
+    if (cleanParent) {
+      const parentFsPath = await this.resolve(cleanParent);
+      if (!parentFsPath) {
+        throw new Error("The destination space or section does not exist.");
+      }
+      if (!this.isSectionFsPath(parentFsPath)) {
+        throw new Error("Pages can only be created inside a space or section.");
+      }
+      parentDir = path.dirname(parentFsPath);
+      parentPrefix = cleanParent;
+    }
+
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      throw new Error("A page title is required.");
+    }
+    const base = slugify(trimmedTitle);
+    if (!base) {
+      throw new Error("The page title must contain letters or numbers.");
+    }
+
+    const name = await this.nextPageName(parentDir, base);
+    const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
+    const fsPath = path.join(parentDir, `${name}.md`);
+
+    const data: Record<string, unknown> = { title: trimmedTitle };
+    if (opts.tags && opts.tags.length > 0) data.tags = opts.tags;
+    if (opts.summary) data.summary = opts.summary;
+    const content = body.trim() ? `${body.trim()}\n` : `# ${trimmedTitle}\n\n`;
+    const raw = matter.stringify(content, data);
+
+    parsePage(raw, fsPath);
+    await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
+    return { slug, fsPath };
+  }
+
   /** Create a new space: a top-level folder with an index.md home page. */
   async createSpace(title: string): Promise<CreatePageMutation> {
     const trimmed = title.trim();
@@ -408,16 +455,15 @@ export class Content {
       throw new Error("Could not determine the source page name.");
     }
 
-    const newSlug = parentSlug ? `${parentSlug}/${sourceName}` : sourceName;
-    if (newSlug === cleanSource) {
+    if ((parentSlug ? `${parentSlug}/${sourceName}` : sourceName) === cleanSource) {
       throw new Error("The page is already in that location.");
     }
 
+    // Auto-suffix the leaf (e.g. notes -> notes-2) when the destination is taken.
+    const freeName = await this.nextPageName(parentDir, sourceName);
+    const newSlug = parentSlug ? `${parentSlug}/${freeName}` : freeName;
     const destinationFile = path.join(this.root, `${newSlug}.md`);
     const destinationDir = path.join(this.root, newSlug);
-    if (await exists(destinationFile) || await exists(destinationDir)) {
-      throw new Error("A page already exists at the destination path.");
-    }
 
     const sourceIsSection = this.isSectionFsPath(source.fsPath);
     const sourcePath = sourceIsSection ? path.dirname(source.fsPath) : source.fsPath;
@@ -450,6 +496,48 @@ export class Content {
       oldSlug: cleanSource,
       newSlug,
       changedFsPaths: uniquePaths(changedFsPaths),
+    };
+  }
+
+  /** Rename a page's slug leaf within its current parent; suffixes on collision. */
+  async renamePage(slug: string, newLeaf: string): Promise<MoveMutation | null> {
+    const cleanSource = cleanSlug(slug);
+    if (cleanSource === "") {
+      throw new Error("The home page cannot be renamed.");
+    }
+
+    const source = await this.load(cleanSource);
+    if (!source) return null;
+
+    const desired = slugify(newLeaf);
+    if (!desired) {
+      throw new Error("The slug must contain letters or numbers.");
+    }
+
+    const segments = cleanSource.split("/");
+    const currentLeaf = segments[segments.length - 1];
+    const parentSlug = segments.slice(0, -1).join("/");
+
+    const sourceIsSection = this.isSectionFsPath(source.fsPath);
+    const sourcePath = sourceIsSection ? path.dirname(source.fsPath) : source.fsPath;
+    const parentDir = path.dirname(sourcePath);
+
+    if (desired === currentLeaf) {
+      return { oldSlug: cleanSource, newSlug: cleanSource, changedFsPaths: [] };
+    }
+
+    const freeName = await this.nextPageName(parentDir, desired);
+    const newSlug = parentSlug ? `${parentSlug}/${freeName}` : freeName;
+    const destinationPath = sourceIsSection
+      ? path.join(parentDir, freeName)
+      : path.join(parentDir, `${freeName}.md`);
+
+    await fs.rename(sourcePath, destinationPath);
+
+    return {
+      oldSlug: cleanSource,
+      newSlug,
+      changedFsPaths: uniquePaths([sourcePath, destinationPath]),
     };
   }
 
@@ -528,6 +616,20 @@ export class Content {
     }
 
     throw new Error("Could not find an available draft page slug.");
+  }
+
+  private async nextPageName(baseDir: string, base: string): Promise<string> {
+    for (let index = 1; index < 10_000; index += 1) {
+      const name = index === 1 ? base : `${base}-${index}`;
+      const candidateFile = path.join(baseDir, `${name}.md`);
+      const candidateDir = path.join(baseDir, name);
+
+      if (!(await exists(candidateFile)) && !(await exists(candidateDir))) {
+        return name;
+      }
+    }
+
+    throw new Error("Could not find an available page slug.");
   }
 
   private async pruneEmptyDirs(dir: string): Promise<void> {

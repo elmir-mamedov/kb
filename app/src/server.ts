@@ -13,6 +13,7 @@ import {
   type DeleteMutation,
   type MoveMutation,
 } from "./content.js";
+import { makeGit } from "./git.js";
 import { createRenderer } from "./markdown.js";
 import {
   archiveLayout,
@@ -46,6 +47,7 @@ const SESSION_COOKIE = "kb_session";
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 
 const content = new Content(KB_DIR);
+const git = makeGit(KB_DIR);
 const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
 
 function loadEnvFile(filePath: string): void {
@@ -216,81 +218,22 @@ async function gitUpdated(fsPath: string): Promise<string | null> {
   }
 }
 
-function kbRelPath(fsPath: string): string {
-  const relPath = path.relative(KB_DIR, fsPath);
-  if (!relPath || relPath.startsWith("..") || path.isAbsolute(relPath)) {
-    throw new Error("Refusing to commit a file outside the knowledge base.");
-  }
-  return relPath.split(path.sep).join("/");
-}
-
-async function gitCommitFiles(fsPaths: string[], message: string): Promise<string | null> {
-  const rels = [...new Set(fsPaths.map(kbRelPath))];
-  if (rels.length === 0) return null;
-
-  const { stdout: status } = await execFileAsync(
-    "git",
-    ["status", "--porcelain", "--", ...rels],
-    { cwd: KB_DIR }
-  );
-  if (!status.trim()) return null;
-
-  await execFileAsync("git", ["add", "--", ...rels], { cwd: KB_DIR });
-
-  const hasUntracked = status
-    .split("\n")
-    .filter(Boolean)
-    .some((line) => line.startsWith("??"));
-  const commitArgs = hasUntracked
-    ? ["commit", "-m", message, "--", ...rels]
-    : ["commit", "--only", "-m", message, "--", ...rels];
-
-  await execFileAsync("git", commitArgs, { cwd: KB_DIR });
-
-  const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
-    cwd: KB_DIR,
-  });
-  return stdout.trim() || null;
-}
-
-async function gitCommitMovedPaths(fsPaths: string[], message: string): Promise<string | null> {
-  const rels = [...new Set(fsPaths.map(kbRelPath))];
-  if (rels.length === 0) return null;
-
-  const { stdout: status } = await execFileAsync(
-    "git",
-    ["status", "--porcelain", "--", ...rels],
-    { cwd: KB_DIR }
-  );
-  if (!status.trim()) return null;
-
-  await execFileAsync("git", ["add", "-A", "--", ...rels], { cwd: KB_DIR });
-  await execFileAsync("git", ["commit", "-m", message, "--", ...rels], {
-    cwd: KB_DIR,
-  });
-
-  const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
-    cwd: KB_DIR,
-  });
-  return stdout.trim() || null;
-}
-
 async function gitCommitPage(fsPath: string): Promise<string | null> {
-  const rel = kbRelPath(fsPath);
-  return gitCommitFiles([fsPath], `Update ${rel} via web`);
+  const rel = git.kbRelPath(fsPath);
+  return git.commitFiles([fsPath], `Update ${rel} via web`);
 }
 
 function archiveCommitMessage(action: "Archive" | "Restore", mutation: ArchiveMutation): string {
-  const target = mutation.isSection ? mutation.slug : kbRelPath(mutation.fsPath);
+  const target = mutation.isSection ? mutation.slug : git.kbRelPath(mutation.fsPath);
   return `${action} ${target} via web`;
 }
 
 function createCommitMessage(mutation: CreatePageMutation): string {
-  return `Create ${kbRelPath(mutation.fsPath)} via web`;
+  return `Create ${git.kbRelPath(mutation.fsPath)} via web`;
 }
 
 function deleteCommitMessage(mutation: DeleteMutation): string {
-  const target = mutation.isSection ? mutation.slug : kbRelPath(mutation.fsPath);
+  const target = mutation.isSection ? mutation.slug : git.kbRelPath(mutation.fsPath);
   return `Delete ${target} via web`;
 }
 
@@ -507,7 +450,7 @@ app.post("/_create", async (req, reply) => {
   }
 
   try {
-    await gitCommitFiles([mutation.fsPath], createCommitMessage(mutation));
+    await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
   } catch (err) {
     const { html } = await renderEditPage(mutation.slug, {
       error: `Created, but Git commit failed: ${errorMessage(err)}`,
@@ -539,7 +482,7 @@ app.post("/_create-space", async (req, reply) => {
   }
 
   try {
-    await gitCommitFiles([mutation.fsPath], createCommitMessage(mutation));
+    await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
   } catch (err) {
     const { html } = await renderEditPage(mutation.slug, {
       error: `Created, but Git commit failed: ${errorMessage(err)}`,
@@ -580,7 +523,7 @@ app.post("/_move", async (req, reply) => {
   }
 
   try {
-    await gitCommitMovedPaths(mutation.changedFsPaths, moveCommitMessage(mutation));
+    await git.commitMovedPaths(mutation.changedFsPaths, moveCommitMessage(mutation));
   } catch (err) {
     return reply.code(500).send({
       ok: false,
@@ -638,7 +581,7 @@ async function handleArchiveMutation(
   }
 
   try {
-    await gitCommitFiles(
+    await git.commitFiles(
       mutation.changedFsPaths,
       archiveCommitMessage(archived ? "Archive" : "Restore", mutation)
     );
@@ -733,7 +676,7 @@ app.post("/_delete/*", async (req, reply) => {
   }
 
   try {
-    await gitCommitFiles(mutation.deletedFsPaths, deleteCommitMessage(mutation));
+    await git.commitFiles(mutation.deletedFsPaths, deleteCommitMessage(mutation));
   } catch (err) {
     const notice = {
       tone: "error",
@@ -795,17 +738,40 @@ app.post("/_edit/*", async (req, reply) => {
       .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
   }
 
+  // Optional URL-slug change: rename the file/folder after the content is saved.
+  let renamed: Awaited<ReturnType<typeof content.renamePage>> = null;
+  const newLeaf = formString(req.body, "slug")?.trim();
+  if (newLeaf) {
+    try {
+      renamed = await content.renamePage(page.slug, newLeaf);
+    } catch (err) {
+      const { html } = await renderEditPage(page.slug, {
+        raw: markdown,
+        error: `Saved the content, but could not change the URL: ${errorMessage(err)}`,
+      });
+      return reply.code(400).type("text/html").send(html);
+    }
+  }
+
+  const didRename = renamed !== null && renamed.newSlug !== renamed.oldSlug;
   try {
-    await gitCommitPage(page.fsPath);
+    if (didRename) {
+      await git.commitMovedPaths(
+        renamed!.changedFsPaths,
+        `Rename ${renamed!.oldSlug} to ${renamed!.newSlug} via web`
+      );
+    } else {
+      await gitCommitPage(page.fsPath);
+    }
   } catch (err) {
-    const { html } = await renderEditPage(slug, {
+    const { html } = await renderEditPage(didRename ? renamed!.newSlug : page.slug, {
       raw: markdown,
       error: `Saved, but Git commit failed: ${errorMessage(err)}`,
     });
     return reply.code(500).type("text/html").send(html);
   }
 
-  return reply.redirect(pagePath(page.slug));
+  return reply.redirect(pagePath(didRename ? renamed!.newSlug : page.slug));
 });
 
 // Any page by slug (supports nested paths).

@@ -7,6 +7,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 import { Content, type PageNode, type TreeFilter } from "./content.js";
+import { makeGit } from "./git.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +21,7 @@ const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
 const VERSION = "0.1.0";
 
 const content = new Content(KB_DIR);
+const git = makeGit(KB_DIR);
 
 interface ListedPage {
   slug: string;
@@ -229,7 +231,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read-only access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Use kb_list_spaces to see spaces, kb_search to find pages, kb_get_page to read Markdown, and kb_list_pages to inspect navigation. Pass `space` to kb_list_pages or kb_search to scope to a single space.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages; pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_update_page (replace raw Markdown), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to git as `... via mcp`.",
   }
 );
 
@@ -359,6 +361,278 @@ server.registerTool(
       space: space ?? null,
       matches: await searchPages(query, selectedFilter, selectedLimit, space),
     });
+  }
+);
+
+function commitTarget(mutation: { isSection: boolean; slug: string; fsPath: string }): string {
+  return mutation.isSection ? mutation.slug : git.kbRelPath(mutation.fsPath);
+}
+
+server.registerTool(
+  "kb_create_page",
+  {
+    title: "Create KB Page",
+    description:
+      "Create a new page from a title and Markdown body inside a space or section. The title becomes the page slug; pass an empty parent only to create a top-level page (use kb_create_space for a new space).",
+    inputSchema: {
+      parent: z
+        .string()
+        .describe("Parent space or section slug, e.g. flux/runbooks. Use an empty string for the root."),
+      title: z.string().min(1).describe("Page title; also slugified into the filename."),
+      body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
+      tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
+      summary: z.string().optional().describe("Optional frontmatter summary."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ parent, title, body, tags, summary }) => {
+    try {
+      const mutation = await content.createPage(parent ?? "", title, body ?? "", { tags, summary });
+      const commit = await git.commitFiles(
+        [mutation.fsPath],
+        `Create ${git.kbRelPath(mutation.fsPath)} via mcp`
+      );
+      return textResult({
+        created: true,
+        slug: mutation.slug,
+        path: git.kbRelPath(mutation.fsPath),
+        commit,
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_update_page",
+  {
+    title: "Update KB Page",
+    description:
+      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required). Read the current source first with kb_get_page (format: raw).",
+    inputSchema: {
+      slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
+      markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, markdown }) => {
+    try {
+      const mutation = await content.updateRaw(slug, markdown);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
+      const commit = await git.commitFiles(
+        [mutation.fsPath],
+        `Update ${git.kbRelPath(mutation.fsPath)} via mcp`
+      );
+      return textResult({ updated: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_archive_page",
+  {
+    title: "Archive KB Page",
+    description:
+      "Archive a page (or an entire section subtree). Archiving sets frontmatter flags rather than deleting; it is reversible with kb_restore_page.",
+    inputSchema: {
+      slug: z.string().min(1).describe("Page or section slug to archive."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug }) => {
+    try {
+      const mutation = await content.updateArchive(slug, true);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
+      const commit = await git.commitFiles(
+        mutation.changedFsPaths,
+        `Archive ${commitTarget(mutation)} via mcp`
+      );
+      return textResult({
+        archived: true,
+        slug: mutation.slug,
+        isSection: mutation.isSection,
+        changed: mutation.changedFsPaths.map(git.kbRelPath),
+        commit,
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_restore_page",
+  {
+    title: "Restore KB Page",
+    description: "Restore a previously archived page (or section subtree), clearing its archived frontmatter flags.",
+    inputSchema: {
+      slug: z.string().min(1).describe("Page or section slug to restore."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug }) => {
+    try {
+      const mutation = await content.updateArchive(slug, false);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
+      const commit = await git.commitFiles(
+        mutation.changedFsPaths,
+        `Restore ${commitTarget(mutation)} via mcp`
+      );
+      return textResult({
+        restored: true,
+        slug: mutation.slug,
+        isSection: mutation.isSection,
+        changed: mutation.changedFsPaths.map(git.kbRelPath),
+        commit,
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_move_page",
+  {
+    title: "Move KB Page",
+    description:
+      "Move or rename a page or section under a new parent. A leaf destination is converted into a section. The slug changes to reflect the new location.",
+    inputSchema: {
+      sourceSlug: z.string().min(1).describe("Slug of the page or section to move."),
+      targetParent: z
+        .string()
+        .optional()
+        .describe("Destination parent slug. Omit or use an empty string to move to the root."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ sourceSlug, targetParent }) => {
+    try {
+      const mutation = await content.movePage(sourceSlug, targetParent || null);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(sourceSlug)}`);
+      const commit = await git.commitMovedPaths(
+        mutation.changedFsPaths,
+        `Move ${mutation.oldSlug} to ${mutation.newSlug} via mcp`
+      );
+      return textResult({ moved: true, oldSlug: mutation.oldSlug, newSlug: mutation.newSlug, commit });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_rename_page",
+  {
+    title: "Rename KB Page",
+    description:
+      "Change a page's URL slug — its last path segment — while keeping it in the same parent. Re-parent with kb_move_page instead. Collisions are auto-suffixed (e.g. notes -> notes-2).",
+    inputSchema: {
+      slug: z.string().min(1).describe("Current page or section slug."),
+      newName: z.string().min(1).describe("New last path segment; slugified to be URL-safe."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, newName }) => {
+    try {
+      const mutation = await content.renamePage(slug, newName);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
+      if (mutation.newSlug === mutation.oldSlug) {
+        return textResult({ renamed: false, slug: mutation.oldSlug, note: "Slug unchanged." });
+      }
+      const commit = await git.commitMovedPaths(
+        mutation.changedFsPaths,
+        `Rename ${mutation.oldSlug} to ${mutation.newSlug} via mcp`
+      );
+      return textResult({ renamed: true, oldSlug: mutation.oldSlug, newSlug: mutation.newSlug, commit });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_delete_page",
+  {
+    title: "Delete KB Page",
+    description:
+      "Permanently delete a page, or an entire section subtree, from the knowledge base. This cannot be undone except via Git history; prefer kb_archive_page when in doubt.",
+    inputSchema: {
+      slug: z.string().min(1).describe("Page or section slug to delete."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug }) => {
+    try {
+      const mutation = await content.deletePage(slug);
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
+      const commit = await git.commitFiles(
+        mutation.deletedFsPaths,
+        `Delete ${commitTarget(mutation)} via mcp`
+      );
+      return textResult({
+        deleted: true,
+        slug: mutation.slug,
+        isSection: mutation.isSection,
+        deletedPaths: mutation.deletedFsPaths.map(git.kbRelPath),
+        commit,
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_create_space",
+  {
+    title: "Create KB Space",
+    description:
+      "Create a new space: a top-level container with its own index.md home page. The title is slugified into the space key.",
+    inputSchema: {
+      title: z.string().min(1).describe("Space title; also slugified into the space key."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ title }) => {
+    try {
+      const mutation = await content.createSpace(title);
+      const commit = await git.commitFiles(
+        [mutation.fsPath],
+        `Create ${git.kbRelPath(mutation.fsPath)} via mcp`
+      );
+      return textResult({ created: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
   }
 );
 

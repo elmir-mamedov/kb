@@ -318,6 +318,17 @@ export function editLayout(v: EditView): string {
     ? `<div class="notice success">${escapeHtml(v.notice)}</div>`
     : "";
   const pagePath = slugPath(v.activeSlug);
+  const segments = v.activeSlug.split("/");
+  const leaf = segments[segments.length - 1] ?? "";
+  const parentPrefix = segments.slice(0, -1).join("/");
+  const slugField = v.activeSlug
+    ? `<label class="editor-label" for="slug">URL slug</label>
+    <div class="slug-row">
+      <span class="slug-prefix">/${parentPrefix ? `${escapeHtml(parentPrefix)}/` : ""}</span>
+      <input id="slug" name="slug" type="text" value="${escapeHtml(leaf)}" spellcheck="false" autocapitalize="off" />
+    </div>
+    <p class="slug-hint">Changes the page URL. Re-parent with drag-and-drop / Move instead.</p>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -343,6 +354,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
   </header>
   ${error}${notice}
   <form class="editor" method="post" action="/_edit${pagePath}">
+    ${slugField}
     <label class="editor-label" for="markdown">Markdown</label>
     <textarea id="markdown" name="markdown" spellcheck="false">${escapeHtml(v.raw)}</textarea>
     <div class="form-actions">
@@ -678,6 +690,15 @@ a:hover{text-decoration:underline}
   font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 .editor textarea:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.slug-row{display:flex; align-items:center; gap:6px; margin-bottom:6px}
+.slug-prefix{color:var(--muted); font:13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.slug-row input{
+  flex:1; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+  color:var(--fg); background:#fff;
+  font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.slug-row input:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.slug-hint{color:var(--muted); font-size:12px; margin:0 0 16px}
 .form-actions{display:flex; gap:8px; align-items:center; margin-top:12px}
 .notice{
   max-width:1100px; margin:0 0 16px; border:1px solid var(--line);

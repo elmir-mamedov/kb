@@ -44,22 +44,39 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
   `Update <path>.md via web`.
 - Serves attachments from `kb/_assets/` at `/_assets/...`.
 
-## Read-only MCP
+## MCP server
 
 The MCP server runs over stdio and exposes the same Markdown knowledge base to
-MCP clients without any write, delete, move, archive, or Git commit tools.
+MCP clients for both reading and writing. Every write is auto-committed in the
+`kb/` Git repo as `... via mcp` (mirroring the web editor's `... via web`).
 
 ```bash
 cd app
 npm run mcp
 ```
 
-Tools:
+Read tools:
 
+- `kb_list_spaces` — returns the spaces (top-level containers). Supports `filter`.
 - `kb_list_pages` — returns the navigation tree. Supports `filter`:
-  `live`, `archived`, or `all`.
+  `live`, `archived`, or `all`, and `space`.
 - `kb_get_page` — reads one page by slug. Supports `format`: `parsed` or `raw`.
 - `kb_search` — searches titles, slugs, tags, summaries, and Markdown body text.
+
+Write tools (auto-commit to Git):
+
+- `kb_create_page` — single-shot create from `parent` + `title` + `body`
+  (optional `tags`, `summary`).
+- `kb_update_page` — replace a page's full raw Markdown (frontmatter validated).
+- `kb_archive_page` / `kb_restore_page` — toggle archived frontmatter flags
+  (reversible; works on section subtrees).
+- `kb_move_page` — move a page or section under a new parent (collisions auto-suffix).
+- `kb_rename_page` — change a page's URL slug (its last path segment) in place.
+- `kb_delete_page` — permanently delete a page or section subtree.
+- `kb_create_space` — create a new top-level space with its own `index.md`.
+
+> The stdio server has no auth, so it trusts its local client with these writes.
+> If it is ever exposed beyond a single trusted user, gate the write tools.
 
 Resources:
 
