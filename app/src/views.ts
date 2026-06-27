@@ -225,10 +225,15 @@ function sessionActions(username?: string | null): string {
   </form>`;
 }
 
-/** Username + Log out pinned to the top-right corner of the page. */
+/** Help + username + Log out pinned to the top-right corner of the page. */
 function sessionCorner(username?: string | null): string {
-  const actions = sessionActions(username);
-  return actions ? `<div class="session-corner">${actions}</div>` : "";
+  if (!username) return "";
+  return `<div class="session-corner">
+    <button type="button" class="button secondary" data-help-open>Help</button>
+    ${sessionActions(username)}
+  </div>
+${HELP_DIALOG}
+<script>${HELP_SCRIPT}</script>`;
 }
 
 function actionForm(actionPrefix: string, slug: string, label: string, variant: string): string {
@@ -399,6 +404,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
     </div>
   </form>
 </main>
+<script>${EDITOR_SCRIPT}</script>
 <script>${MOVE_SCRIPT}</script>
 </body>
 </html>`;
@@ -506,6 +512,53 @@ ${sessionCorner(v.username)}
 </body>
 </html>`;
 }
+
+/** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
+const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
+  <form method="dialog" class="help-head">
+    <h2>Flux Help</h2>
+    <button class="help-close" aria-label="Close help" value="close">&times;</button>
+  </form>
+  <section class="help-section">
+    <h3>About Flux</h3>
+    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, or delete it.</p>
+  </section>
+  <section class="help-section">
+    <h3>Keyboard shortcuts</h3>
+    <dl class="help-keys">
+      <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>S</kbd></dt>
+      <dd>Save the page you are editing</dd>
+      <dt><kbd>Esc</kbd></dt>
+      <dd>Close this dialog</dd>
+    </dl>
+  </section>
+</dialog>`;
+
+const HELP_SCRIPT = `
+(() => {
+  const dialog = document.querySelector("[data-help-dialog]");
+  const openBtn = document.querySelector("[data-help-open]");
+  if (!dialog || !openBtn) return;
+  openBtn.addEventListener("click", () => {
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  });
+})();
+`;
+
+/** Cmd/Ctrl+S submits the open editor form instead of the browser save dialog. */
+const EDITOR_SCRIPT = `
+(() => {
+  document.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+    const form = document.querySelector("form.editor");
+    if (!form) return;
+    event.preventDefault();
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else form.submit();
+  });
+})();
+`;
 
 const MOVE_SCRIPT = `
 (() => {
@@ -787,7 +840,35 @@ a:hover{text-decoration:underline}
 .confirm-actions{display:flex; gap:8px; align-items:center; margin-top:16px}
 .session-actions{display:inline-flex; align-items:center; gap:8px; margin:0}
 .session-user{color:var(--muted); font-size:13px}
-.session-corner{position:fixed; top:12px; right:16px; z-index:50}
+.session-corner{position:fixed; top:12px; right:16px; z-index:50;
+  display:flex; align-items:center; gap:8px}
+.help-dialog{
+  width:min(520px,92vw); border:1px solid var(--line); border-radius:10px;
+  padding:0; color:var(--fg); box-shadow:0 8px 30px rgba(0,0,0,.18);
+}
+.help-dialog::backdrop{background:rgba(15,23,42,.35)}
+.help-head{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  margin:0; padding:16px 20px; border-bottom:1px solid var(--line);
+}
+.help-head h2{font-size:18px; line-height:1.2; margin:0}
+.help-close{
+  border:0; background:transparent; cursor:pointer; color:var(--muted);
+  font-size:22px; line-height:1; padding:0 4px;
+}
+.help-close:hover{color:var(--fg)}
+.help-section{padding:16px 20px 0}
+.help-section:last-child{padding-bottom:20px}
+.help-section h3{font-size:14px; margin:0 0 8px}
+.help-section p{margin:0; color:#374151; font-size:14px; line-height:1.6}
+.help-keys{display:grid; grid-template-columns:auto 1fr; gap:8px 16px; margin:0}
+.help-keys dt{display:flex; align-items:center; gap:4px}
+.help-keys dd{margin:0; color:#374151; font-size:14px}
+.help-keys kbd{
+  display:inline-block; border:1px solid var(--line); border-bottom-width:2px;
+  border-radius:5px; background:var(--code-bg); padding:1px 6px;
+  font:600 12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
 .button{
   display:inline-flex; align-items:center; justify-content:center; min-height:34px;
   border:1px solid var(--line); border-radius:6px; padding:5px 12px;
