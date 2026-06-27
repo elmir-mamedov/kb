@@ -275,7 +275,7 @@ async function renderPage(
 
   const spaceKey = content.spaceKeyOf(page.slug);
   const tree = await content.spaceTree(spaceKey);
-  const md = createRenderer((s) => titles.get(s));
+  const md = createRenderer((s) => titles.get(s), page.slug);
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
 

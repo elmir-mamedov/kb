@@ -2,11 +2,55 @@ import MarkdownIt from "markdown-it";
 import hljs from "highlight.js";
 
 /**
+ * Resolve a [[wiki-link]] target against the page it appears on.
+ *
+ * A bare target like `crif-credit-report` written on
+ * `pdf-extraction/crif-credit-report/backlog` should land on the page of that
+ * name within the same space, not at the repo root (`/crif-credit-report`). We
+ * try candidates from most specific (a child of the current page) up through
+ * each ancestor to the space root, then the bare target, and return the first
+ * that names a real page. A leading slash forces an absolute, repo-root target.
+ */
+export function resolveWikiTarget(
+  rawTarget: string,
+  currentSlug: string,
+  isPage: (slug: string) => boolean
+): string {
+  const target = rawTarget.trim().replace(/^\/+/, "");
+  if (!target) return target;
+  // Explicit absolute target ("/foo/bar") is used verbatim.
+  if (rawTarget.trim().startsWith("/")) return target;
+
+  const segments = currentSlug ? currentSlug.split("/") : [];
+  const candidates: string[] = [];
+  if (currentSlug) candidates.push(`${currentSlug}/${target}`); // a child page
+  for (let i = segments.length - 1; i >= 1; i -= 1) {
+    candidates.push(`${segments.slice(0, i).join("/")}/${target}`); // ancestors
+  }
+  candidates.push(target); // bare, repo-root
+
+  for (const candidate of candidates) {
+    if (isPage(candidate)) return candidate;
+  }
+
+  // No match: keep a broken link inside the current space rather than sending
+  // it to the repo root.
+  const spaceKey = segments[0];
+  return spaceKey ? `${spaceKey}/${target}` : target;
+}
+
+/**
  * Create a markdown renderer.
  * @param resolveTitle maps a slug to a page title, so [[wiki-links]] can show
- *                     the target page's real title.
+ *                     the target page's real title. A slug that maps to a
+ *                     title is also treated as an existing page.
+ * @param currentSlug  the slug of the page being rendered, used to resolve
+ *                     relative [[wiki-link]] targets within the same space.
  */
-export function createRenderer(resolveTitle: (slug: string) => string | undefined): MarkdownIt {
+export function createRenderer(
+  resolveTitle: (slug: string) => string | undefined,
+  currentSlug = ""
+): MarkdownIt {
   const md = new MarkdownIt({
     html: false, // don't allow raw HTML from content for safety
     linkify: true,
@@ -38,7 +82,11 @@ export function createRenderer(resolveTitle: (slug: string) => string | undefine
     if (!silent) {
       const inner = state.src.slice(start + 2, end);
       const [rawTarget, rawLabel] = inner.split("|");
-      const slug = (rawTarget || "").trim().replace(/^\/+/, "");
+      const slug = resolveWikiTarget(
+        rawTarget || "",
+        currentSlug,
+        (s) => resolveTitle(s) !== undefined
+      );
       const text =
         (rawLabel && rawLabel.trim()) ||
         resolveTitle(slug) ||
