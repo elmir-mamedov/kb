@@ -197,20 +197,43 @@ app.addHook("onRequest", async (req, reply) => {
   return reply.redirect(`/_login?next=${next}`, 303);
 });
 
-// Serve attachments from kb/_assets at /_assets/*
+// Register @fastify/static once with no route of its own (`serve: false`), just
+// to decorate reply with sendFile so a per-call rootOverride can target each
+// space's _assets dir.
 await app.register(fastifyStatic, {
-  root: path.join(KB_DIR, "_assets"),
-  prefix: "/_assets/",
-  decorateReply: false,
+  root: KB_DIR,
+  serve: false,
+  decorateReply: true,
+});
+
+// Per-space attachments: kb/<space>/_assets/* served at /<space>/_assets/*.
+// find-my-way ranks the literal `_assets` segment above the `/*` page
+// catch-all, so page routing is unaffected. Sits behind the auth hook.
+app.get("/:space/_assets/*", async (req, reply) => {
+  const params = req.params as { space: string; "*": string };
+  const space = content.spaceKeyOf(params.space);
+  const assetsRoot = path.join(KB_DIR, space, "_assets");
+  if (
+    !space ||
+    space.startsWith(".") ||
+    space.startsWith("_") ||
+    !isInsideDir(KB_DIR, assetsRoot)
+  ) {
+    return reply.callNotFound();
+  }
+  return reply.sendFile(params["*"], assetsRoot);
 });
 
 /** Best-effort git commit date+time for a file; falls back to null. */
 async function gitUpdated(fsPath: string): Promise<string | null> {
   try {
+    // History lives in the file's per-space repo, not at the KB root.
+    const repoRoot = git.spaceRepoRoot(fsPath);
+    const rel = path.relative(repoRoot, fsPath);
     const { stdout } = await execFileAsync(
       "git",
-      ["log", "-1", "--date=format:%Y-%m-%d %H:%M", "--format=%cd", "--", fsPath],
-      { cwd: KB_DIR }
+      ["log", "-1", "--date=format:%Y-%m-%d %H:%M", "--format=%cd", "--", rel],
+      { cwd: repoRoot }
     );
     return stdout.trim() || null;
   } catch {
@@ -254,6 +277,12 @@ function formString(body: unknown, field: string): string | null {
 function pagePath(slug: string): string {
   if (!slug) return "/";
   return "/" + slug.split("/").map(encodeURIComponent).join("/");
+}
+
+/** True when `child` resolves to `parent` itself or a path beneath it (no traversal). */
+function isInsideDir(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 async function renderPage(
@@ -486,7 +515,13 @@ app.post("/_create-space", async (req, reply) => {
   }
 
   try {
-    await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
+    // A new space is its own git repo: initialize it before committing the
+    // scaffolding (index.md, _assets/.gitkeep, .gitignore) into it.
+    await git.initSpaceRepo(mutation.slug);
+    await git.commitFiles(
+      mutation.changedFsPaths ?? [mutation.fsPath],
+      createCommitMessage(mutation)
+    );
   } catch (err) {
     const { html } = await renderEditPage(mutation.slug, {
       error: `Created, but Git commit failed: ${errorMessage(err)}`,

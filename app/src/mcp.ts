@@ -231,7 +231,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages; pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_update_page (replace raw Markdown), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to git as `... via mcp`.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages; pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_update_page (replace raw Markdown), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`.",
   }
 );
 
@@ -373,11 +373,11 @@ server.registerTool(
   {
     title: "Create KB Page",
     description:
-      "Create a new page from a title and Markdown body inside any page. The title becomes the page slug; a leaf-page parent is auto-promoted into a section. Pass an empty parent only to create a top-level page (use kb_create_space for a new space).",
+      "Create a new page from a title and Markdown body inside a space or page. The title becomes the page slug; a leaf-page parent is auto-promoted into a section. Every page must live inside a space, so the parent is required (a space key like `flux`, or a deeper page slug); use kb_create_space for a new space.",
     inputSchema: {
       parent: z
         .string()
-        .describe("Parent page slug, e.g. flux/runbooks. A leaf parent becomes a section. Use an empty string for the root."),
+        .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. A leaf parent becomes a section. Required; pages cannot be created at the root."),
       title: z.string().min(1).describe("Page title; also slugified into the filename."),
       body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
       tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
@@ -625,8 +625,11 @@ server.registerTool(
   async ({ title }) => {
     try {
       const mutation = await content.createSpace(title);
+      // A new space is its own git repo: initialize it before committing the
+      // scaffolding (index.md, _assets/.gitkeep, .gitignore) into it.
+      await git.initSpaceRepo(mutation.slug);
       const commit = await git.commitFiles(
-        [mutation.fsPath],
+        mutation.changedFsPaths ?? [mutation.fsPath],
         `Create ${git.kbRelPath(mutation.fsPath)} via mcp`
       );
       return textResult({ created: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });

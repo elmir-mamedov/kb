@@ -40,6 +40,37 @@ export function resolveWikiTarget(
 }
 
 /**
+ * Rewrite a portable `_assets/…` reference to the current page's space-scoped
+ * asset URL (`/<spaceKey>/_assets/…`). Absolute/external/anchor URLs and any
+ * target not beginning with `_assets/` are returned unchanged.
+ */
+function rewriteAssetUrl(url: string, spaceKey: string): string {
+  if (!spaceKey || !url.startsWith("_assets/")) return url;
+  return `/${spaceKey}/${url}`;
+}
+
+/**
+ * Wrap a markdown-it render rule so a named attribute (`src`/`href`) is passed
+ * through {@link rewriteAssetUrl} before the default renderer runs. Preserves
+ * any previously installed rule and falls back to `renderToken`.
+ */
+function rewriteAttr(md: MarkdownIt, rule: string, attr: string, spaceKey: string): void {
+  if (!spaceKey) return;
+  const rules = md.renderer.rules;
+  const previous = rules[rule];
+  rules[rule] = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const index = token.attrIndex(attr);
+    if (index >= 0 && token.attrs) {
+      token.attrs[index][1] = rewriteAssetUrl(token.attrs[index][1], spaceKey);
+    }
+    return previous
+      ? previous(tokens, idx, options, env, self)
+      : self.renderToken(tokens, idx, options);
+  };
+}
+
+/**
  * Create a markdown renderer.
  * @param resolveTitle maps a slug to a page title, so [[wiki-links]] can show
  *                     the target page's real title. A slug that maps to a
@@ -66,6 +97,13 @@ export function createRenderer(
       return ""; // markdown-it will escape & wrap in <pre><code>
     },
   });
+
+  // Rewrite relative `_assets/…` references (images and attachment links such
+  // as PDFs) to the current page's space, e.g. `_assets/diagram.png` on a `flux`
+  // page → `/flux/_assets/diagram.png`. Portable across space renames.
+  const spaceKey = currentSlug.split("/")[0] ?? "";
+  rewriteAttr(md, "image", "src", spaceKey);
+  rewriteAttr(md, "link_open", "href", spaceKey);
 
   // [[slug]] or [[slug|Label]] wiki-links, resolved before normal links.
   md.inline.ruler.before("link", "wikilink", (state, silent) => {

@@ -304,6 +304,9 @@ export class Content {
   /** Create an untitled draft page inside a space/section (or root when parent is ""). */
   async createDraft(parentSlug = ""): Promise<CreatePageMutation> {
     const cleanParent = cleanSlug(parentSlug);
+    if (!cleanParent) {
+      throw new Error("Pages must live inside a space.");
+    }
     let parentDir = this.root;
     let parentPrefix = "";
     let promotion: LeafPromotion | null = null;
@@ -340,6 +343,9 @@ export class Content {
     opts: { tags?: string[]; summary?: string } = {}
   ): Promise<CreatePageMutation> {
     const cleanParent = cleanSlug(parentSlug);
+    if (!cleanParent) {
+      throw new Error("Pages must live inside a space.");
+    }
     let parentDir = this.root;
     let parentPrefix = "";
     let promotion: LeafPromotion | null = null;
@@ -401,9 +407,20 @@ export class Content {
 
     const raw = matter.stringify(`# ${trimmed}\n\n`, { title: trimmed });
     parsePage(raw, fsPath);
-    await fs.mkdir(dir, { recursive: true });
+
+    // Scaffold the space as a self-contained, ready-to-version folder: its home
+    // page, an attachments dir, and a default .gitignore. The caller turns this
+    // into a git repo (git.initSpaceRepo) and commits these paths.
+    const assetsDir = path.join(dir, "_assets");
+    const gitkeepPath = path.join(assetsDir, ".gitkeep");
+    const gitignorePath = path.join(dir, ".gitignore");
+
+    await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
-    return { slug: key, fsPath };
+    await fs.writeFile(gitkeepPath, "", { encoding: "utf8", flag: "wx" });
+    await fs.writeFile(gitignorePath, SPACE_GITIGNORE, { encoding: "utf8", flag: "wx" });
+
+    return { slug: key, fsPath, changedFsPaths: [fsPath, gitkeepPath, gitignorePath] };
   }
 
   /** Return deletion impact without mutating the filesystem. */
@@ -459,7 +476,10 @@ export class Content {
     if (!source) return null;
 
     const cleanTarget = targetParentSlug === null ? "" : cleanSlug(targetParentSlug);
-    if (cleanTarget && (cleanTarget === cleanSource || cleanTarget.startsWith(`${cleanSource}/`))) {
+    if (!cleanTarget) {
+      throw new Error("Pages must live inside a space.");
+    }
+    if (cleanTarget === cleanSource || cleanTarget.startsWith(`${cleanSource}/`)) {
       throw new Error("A page cannot be moved into itself or one of its children.");
     }
 
@@ -760,6 +780,17 @@ export class Content {
     return true;
   }
 }
+
+/** Default .gitignore written into each new space repo (mirrors the migration script). */
+const SPACE_GITIGNORE = `# Derived search index — generated from the markdown files, never committed.
+*.sqlite
+*.sqlite-*
+.search-index/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+`;
 
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
