@@ -16,6 +16,12 @@ export interface PageNode {
   /** True when the backing page has archived: true in frontmatter. */
   archived: boolean;
   archivedAt?: string;
+  /**
+   * Last-modified time (ms since epoch) of the backing file. For sections it is
+   * the most recent mtime across the whole subtree, so an area with recent
+   * activity bubbles up. Drives "recently modified" sibling ordering.
+   */
+  modifiedMs: number;
   children: PageNode[];
 }
 
@@ -179,6 +185,12 @@ export class Content {
           /* no/invalid index.md — still a navigable container */
         }
         const children = await this.walk(dirPath, slug, filter);
+        // A section's modified time is the most recent change to its own index
+        // or any descendant, so recently-touched branches sort to the top.
+        const modifiedMs = children.reduce(
+          (max, child) => Math.max(max, child.modifiedMs),
+          await mtimeMs(backing)
+        );
         if (this.includeNode(filter, archived, children.length)) {
           nodes.push({
             slug,
@@ -187,6 +199,7 @@ export class Content {
             isSection: true,
             archived,
             archivedAt,
+            modifiedMs,
             children,
           });
         }
@@ -206,13 +219,18 @@ export class Content {
         } catch {
           /* fall back to filename */
         }
+        const modifiedMs = await mtimeMs(fsPath);
         if (this.includeNode(filter, archived, 0)) {
-          nodes.push({ slug, title, fsPath, isSection: false, archived, archivedAt, children: [] });
+          nodes.push({ slug, title, fsPath, isSection: false, archived, archivedAt, modifiedMs, children: [] });
         }
       }
     }
 
-    nodes.sort((a, b) => a.title.localeCompare(b.title));
+    // Most-recently-modified first, falling back to title for a stable order
+    // when timestamps tie (e.g. a fresh checkout where mtimes are uniform).
+    nodes.sort(
+      (a, b) => b.modifiedMs - a.modifiedMs || a.title.localeCompare(b.title)
+    );
     return nodes;
   }
 
@@ -286,6 +304,9 @@ export class Content {
   /** Create an untitled draft page inside a space/section (or root when parent is ""). */
   async createDraft(parentSlug = ""): Promise<CreatePageMutation> {
     const cleanParent = cleanSlug(parentSlug);
+    if (!cleanParent) {
+      throw new Error("Pages must live inside a space.");
+    }
     let parentDir = this.root;
     let parentPrefix = "";
     let promotion: LeafPromotion | null = null;
@@ -322,6 +343,9 @@ export class Content {
     opts: { tags?: string[]; summary?: string } = {}
   ): Promise<CreatePageMutation> {
     const cleanParent = cleanSlug(parentSlug);
+    if (!cleanParent) {
+      throw new Error("Pages must live inside a space.");
+    }
     let parentDir = this.root;
     let parentPrefix = "";
     let promotion: LeafPromotion | null = null;
@@ -383,9 +407,20 @@ export class Content {
 
     const raw = matter.stringify(`# ${trimmed}\n\n`, { title: trimmed });
     parsePage(raw, fsPath);
-    await fs.mkdir(dir, { recursive: true });
+
+    // Scaffold the space as a self-contained, ready-to-version folder: its home
+    // page, an attachments dir, and a default .gitignore. The caller turns this
+    // into a git repo (git.initSpaceRepo) and commits these paths.
+    const assetsDir = path.join(dir, "_assets");
+    const gitkeepPath = path.join(assetsDir, ".gitkeep");
+    const gitignorePath = path.join(dir, ".gitignore");
+
+    await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
-    return { slug: key, fsPath };
+    await fs.writeFile(gitkeepPath, "", { encoding: "utf8", flag: "wx" });
+    await fs.writeFile(gitignorePath, SPACE_GITIGNORE, { encoding: "utf8", flag: "wx" });
+
+    return { slug: key, fsPath, changedFsPaths: [fsPath, gitkeepPath, gitignorePath] };
   }
 
   /** Return deletion impact without mutating the filesystem. */
@@ -441,7 +476,10 @@ export class Content {
     if (!source) return null;
 
     const cleanTarget = targetParentSlug === null ? "" : cleanSlug(targetParentSlug);
-    if (cleanTarget && (cleanTarget === cleanSource || cleanTarget.startsWith(`${cleanSource}/`))) {
+    if (!cleanTarget) {
+      throw new Error("Pages must live inside a space.");
+    }
+    if (cleanTarget === cleanSource || cleanTarget.startsWith(`${cleanSource}/`)) {
       throw new Error("A page cannot be moved into itself or one of its children.");
     }
 
@@ -743,6 +781,17 @@ export class Content {
   }
 }
 
+/** Default .gitignore written into each new space repo (mirrors the migration script). */
+const SPACE_GITIGNORE = `# Derived search index — generated from the markdown files, never committed.
+*.sqlite
+*.sqlite-*
+.search-index/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+`;
+
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
 }
@@ -769,5 +818,14 @@ async function exists(p: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Best-effort last-modified time in ms; 0 when the path can't be stat'd. */
+async function mtimeMs(p: string): Promise<number> {
+  try {
+    return (await fs.stat(p)).mtimeMs;
+  } catch {
+    return 0;
   }
 }

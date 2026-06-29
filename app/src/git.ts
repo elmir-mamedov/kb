@@ -5,10 +5,17 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
- * Git auto-commit helpers bound to a knowledge-base directory. Both the web
- * server and the MCP server use these so every write lands as an audited commit.
+ * Git auto-commit helpers bound to a knowledge-base directory.
+ *
+ * Each space under the KB root is its **own git repo** (`kb/<space>/.git`), so
+ * the KB root itself is not versioned. These helpers resolve the owning space
+ * repo per file and group git commands by repo, so a single call can span repos
+ * (only the cross-space move case does) while each commit lands in the right
+ * place. Both the web server and the MCP server use these so every write is an
+ * audited commit in the correct per-space repo.
  */
 export function makeGit(kbDir: string) {
+  /** Path of fsPath relative to the KB root (forward slashes). Throws if outside the KB. */
   function kbRelPath(fsPath: string): string {
     const relPath = path.relative(kbDir, fsPath);
     if (!relPath || relPath.startsWith("..") || path.isAbsolute(relPath)) {
@@ -17,58 +24,113 @@ export function makeGit(kbDir: string) {
     return relPath.split(path.sep).join("/");
   }
 
-  async function commitFiles(fsPaths: string[], message: string): Promise<string | null> {
-    const rels = [...new Set(fsPaths.map(kbRelPath))];
+  /** Absolute path to the per-space git repo that owns fsPath (`kb/<space>`). */
+  function spaceRepoRoot(fsPath: string): string {
+    const space = kbRelPath(fsPath).split("/")[0];
+    if (!space) {
+      throw new Error("Refusing to commit a file that does not live inside a space.");
+    }
+    return path.join(kbDir, space);
+  }
+
+  /** fsPath relative to its space repo root (forward slashes), for `git add`/`commit`. */
+  function relInRepo(fsPath: string): string {
+    const repoRoot = spaceRepoRoot(fsPath);
+    const rel = path.relative(repoRoot, fsPath);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error("Refusing to commit a file outside its space repo.");
+    }
+    return rel.split(path.sep).join("/");
+  }
+
+  /** Group fsPaths by their owning space repo, mapping each to deduped repo-relative paths. */
+  function groupByRepo(fsPaths: string[]): Map<string, string[]> {
+    const groups = new Map<string, string[]>();
+    for (const fsPath of fsPaths) {
+      const repoRoot = spaceRepoRoot(fsPath);
+      const rel = relInRepo(fsPath);
+      const rels = groups.get(repoRoot);
+      if (rels) {
+        if (!rels.includes(rel)) rels.push(rel);
+      } else {
+        groups.set(repoRoot, [rel]);
+      }
+    }
+    return groups;
+  }
+
+  /**
+   * Run the status→add→commit→rev-parse sequence inside a single repo.
+   * `mode: "only"` mirrors {@link commitFiles} (untracked-aware `--only`), while
+   * `mode: "all"` mirrors {@link commitMovedPaths} (`git add -A` for renames).
+   */
+  async function commitInRepo(
+    repoRoot: string,
+    rels: string[],
+    message: string,
+    mode: "only" | "all"
+  ): Promise<string | null> {
     if (rels.length === 0) return null;
 
     const { stdout: status } = await execFileAsync(
       "git",
       ["status", "--porcelain", "--", ...rels],
-      { cwd: kbDir }
+      { cwd: repoRoot }
     );
     if (!status.trim()) return null;
 
-    await execFileAsync("git", ["add", "--", ...rels], { cwd: kbDir });
-
-    const hasUntracked = status
-      .split("\n")
-      .filter(Boolean)
-      .some((line) => line.startsWith("??"));
-    const commitArgs = hasUntracked
-      ? ["commit", "-m", message, "--", ...rels]
-      : ["commit", "--only", "-m", message, "--", ...rels];
-
-    await execFileAsync("git", commitArgs, { cwd: kbDir });
+    if (mode === "all") {
+      await execFileAsync("git", ["add", "-A", "--", ...rels], { cwd: repoRoot });
+      await execFileAsync("git", ["commit", "-m", message, "--", ...rels], {
+        cwd: repoRoot,
+      });
+    } else {
+      await execFileAsync("git", ["add", "--", ...rels], { cwd: repoRoot });
+      const hasUntracked = status
+        .split("\n")
+        .filter(Boolean)
+        .some((line) => line.startsWith("??"));
+      const commitArgs = hasUntracked
+        ? ["commit", "-m", message, "--", ...rels]
+        : ["commit", "--only", "-m", message, "--", ...rels];
+      await execFileAsync("git", commitArgs, { cwd: repoRoot });
+    }
 
     const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: kbDir,
+      cwd: repoRoot,
     });
     return stdout.trim() || null;
+  }
+
+  async function commitGrouped(
+    fsPaths: string[],
+    message: string,
+    mode: "only" | "all"
+  ): Promise<string | null> {
+    let lastSha: string | null = null;
+    for (const [repoRoot, rels] of groupByRepo(fsPaths)) {
+      const sha = await commitInRepo(repoRoot, rels, message, mode);
+      if (sha) lastSha = sha;
+    }
+    return lastSha;
+  }
+
+  async function commitFiles(fsPaths: string[], message: string): Promise<string | null> {
+    return commitGrouped(fsPaths, message, "only");
   }
 
   async function commitMovedPaths(fsPaths: string[], message: string): Promise<string | null> {
-    const rels = [...new Set(fsPaths.map(kbRelPath))];
-    if (rels.length === 0) return null;
-
-    const { stdout: status } = await execFileAsync(
-      "git",
-      ["status", "--porcelain", "--", ...rels],
-      { cwd: kbDir }
-    );
-    if (!status.trim()) return null;
-
-    await execFileAsync("git", ["add", "-A", "--", ...rels], { cwd: kbDir });
-    await execFileAsync("git", ["commit", "-m", message, "--", ...rels], {
-      cwd: kbDir,
-    });
-
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: kbDir,
-    });
-    return stdout.trim() || null;
+    return commitGrouped(fsPaths, message, "all");
   }
 
-  return { kbRelPath, commitFiles, commitMovedPaths };
+  /** Initialize a fresh git repo on branch `main` for a newly created space. */
+  async function initSpaceRepo(spaceKey: string): Promise<void> {
+    const repoRoot = path.join(kbDir, spaceKey);
+    await execFileAsync("git", ["init"], { cwd: repoRoot });
+    await execFileAsync("git", ["branch", "-m", "main"], { cwd: repoRoot });
+  }
+
+  return { kbRelPath, spaceRepoRoot, commitFiles, commitMovedPaths, initSpaceRepo };
 }
 
 export type Git = ReturnType<typeof makeGit>;

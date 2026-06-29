@@ -40,6 +40,25 @@ const KB_DIR = path.resolve(
 const HOST = process.env.HOST ?? "0.0.0.0"; // bind for LAN access
 const PORT = Number(process.env.PORT ?? 4000);
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
+
+// Site icons bundled with the app, served from the site root so the
+// <link rel="icon"> tags and the browser's automatic /favicon.ico lookup
+// resolve. Each is registered as a literal route, which find-my-way ranks
+// above the `/*` page catch-all.
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
+const PUBLIC_FILES = [
+  "favicon.ico",
+  "favicon-16x16.png",
+  "favicon-32x32.png",
+  "favicon-48x48.png",
+  "favicon-64x64.png",
+  "favicon-96x96.png",
+  "favicon-192x192.png",
+  "favicon-512x512.png",
+  "apple-touch-icon.png",
+  "flux.svg",
+];
+const PUBLIC_PATHS = new Set(PUBLIC_FILES.map((file) => `/${file}`));
 const AUTH_USERNAME = requireEnv("AUTH_USERNAME");
 const AUTH_PASSWORD = requireEnv("AUTH_PASSWORD");
 const AUTH_SESSION_SECRET = requireEnv("AUTH_SESSION_SECRET");
@@ -190,27 +209,57 @@ function clearSessionCookie(): string {
 }
 
 app.addHook("onRequest", async (req, reply) => {
-  if (requestPath(req) === "/_login") return;
+  const reqPath = requestPath(req);
+  if (reqPath === "/_login") return;
+  if (PUBLIC_PATHS.has(reqPath)) return; // site icons load before sign-in
   if (currentUser(req)) return;
 
   const next = encodeURIComponent(req.url || "/");
   return reply.redirect(`/_login?next=${next}`, 303);
 });
 
-// Serve attachments from kb/_assets at /_assets/*
+// Register @fastify/static once with no route of its own (`serve: false`), just
+// to decorate reply with sendFile so a per-call rootOverride can target each
+// space's _assets dir.
 await app.register(fastifyStatic, {
-  root: path.join(KB_DIR, "_assets"),
-  prefix: "/_assets/",
-  decorateReply: false,
+  root: KB_DIR,
+  serve: false,
+  decorateReply: true,
 });
+
+// Per-space attachments: kb/<space>/_assets/* served at /<space>/_assets/*.
+// find-my-way ranks the literal `_assets` segment above the `/*` page
+// catch-all, so page routing is unaffected. Sits behind the auth hook.
+app.get("/:space/_assets/*", async (req, reply) => {
+  const params = req.params as { space: string; "*": string };
+  const space = content.spaceKeyOf(params.space);
+  const assetsRoot = path.join(KB_DIR, space, "_assets");
+  if (
+    !space ||
+    space.startsWith(".") ||
+    space.startsWith("_") ||
+    !isInsideDir(KB_DIR, assetsRoot)
+  ) {
+    return reply.callNotFound();
+  }
+  return reply.sendFile(params["*"], assetsRoot);
+});
+
+// Bundled site icons (favicons, app icons) served from app/public at the root.
+for (const file of PUBLIC_FILES) {
+  app.get(`/${file}`, async (_req, reply) => reply.sendFile(file, PUBLIC_DIR));
+}
 
 /** Best-effort git commit date+time for a file; falls back to null. */
 async function gitUpdated(fsPath: string): Promise<string | null> {
   try {
+    // History lives in the file's per-space repo, not at the KB root.
+    const repoRoot = git.spaceRepoRoot(fsPath);
+    const rel = path.relative(repoRoot, fsPath);
     const { stdout } = await execFileAsync(
       "git",
-      ["log", "-1", "--date=format:%Y-%m-%d %H:%M", "--format=%cd", "--", fsPath],
-      { cwd: KB_DIR }
+      ["log", "-1", "--date=format:%Y-%m-%d %H:%M", "--format=%cd", "--", rel],
+      { cwd: repoRoot }
     );
     return stdout.trim() || null;
   } catch {
@@ -256,6 +305,12 @@ function pagePath(slug: string): string {
   return "/" + slug.split("/").map(encodeURIComponent).join("/");
 }
 
+/** True when `child` resolves to `parent` itself or a path beneath it (no traversal). */
+function isInsideDir(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 async function renderPage(
   slug: string,
   options: { notice?: ViewNotice } = {}
@@ -275,7 +330,7 @@ async function renderPage(
 
   const spaceKey = content.spaceKeyOf(page.slug);
   const tree = await content.spaceTree(spaceKey);
-  const md = createRenderer((s) => titles.get(s));
+  const md = createRenderer((s) => titles.get(s), page.slug);
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
 
@@ -486,7 +541,13 @@ app.post("/_create-space", async (req, reply) => {
   }
 
   try {
-    await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
+    // A new space is its own git repo: initialize it before committing the
+    // scaffolding (index.md, _assets/.gitkeep, .gitignore) into it.
+    await git.initSpaceRepo(mutation.slug);
+    await git.commitFiles(
+      mutation.changedFsPaths ?? [mutation.fsPath],
+      createCommitMessage(mutation)
+    );
   } catch (err) {
     const { html } = await renderEditPage(mutation.slug, {
       error: `Created, but Git commit failed: ${errorMessage(err)}`,

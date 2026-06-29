@@ -4,7 +4,7 @@
 
 This repository contains a lean Markdown knowledge-base viewer. Application code lives in `app/src/` and is organized by responsibility: `server.ts` wires Fastify routes and configuration, `content.ts` reads the knowledge-base tree, `frontmatter.ts` parses page metadata, `markdown.ts` renders Markdown, and `views.ts` builds HTML. Runtime package files are in `app/`.
 
-Knowledge-base content lives in `kb/`. Folders are navigation sections, `index.md` files are section landing pages, and leaf pages use lowercase hyphenated filenames such as `kb/engineering/runbooks/deploy.md`. Assets belong under `kb/_assets/`. Root files such as `first-step.md` and `knowledge-base-plan.md` are planning/spec notes.
+Knowledge-base content lives in `kb/`. Each top-level folder under `kb/` is a **space** and its own git repo (`kb/<space>/.git`); `kb/` itself is not versioned. Folders are navigation sections, `index.md` files are section landing pages, and leaf pages use lowercase hyphenated filenames such as `kb/engineering/runbooks/deploy.md`. Assets belong under each space's own `kb/<space>/_assets/` and are referenced with the portable relative form `_assets/file.png` (rewritten to `/<space>/_assets/file.png` at render time). Root files such as `first-step.md` and `knowledge-base-plan.md` are planning/spec notes.
 
 ## Build, Test, and Development Commands
 
