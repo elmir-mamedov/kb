@@ -40,6 +40,25 @@ const KB_DIR = path.resolve(
 const HOST = process.env.HOST ?? "0.0.0.0"; // bind for LAN access
 const PORT = Number(process.env.PORT ?? 4000);
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
+
+// Site icons bundled with the app, served from the site root so the
+// <link rel="icon"> tags and the browser's automatic /favicon.ico lookup
+// resolve. Each is registered as a literal route, which find-my-way ranks
+// above the `/*` page catch-all.
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
+const PUBLIC_FILES = [
+  "favicon.ico",
+  "favicon-16x16.png",
+  "favicon-32x32.png",
+  "favicon-48x48.png",
+  "favicon-64x64.png",
+  "favicon-96x96.png",
+  "favicon-192x192.png",
+  "favicon-512x512.png",
+  "apple-touch-icon.png",
+  "flux.svg",
+];
+const PUBLIC_PATHS = new Set(PUBLIC_FILES.map((file) => `/${file}`));
 const AUTH_USERNAME = requireEnv("AUTH_USERNAME");
 const AUTH_PASSWORD = requireEnv("AUTH_PASSWORD");
 const AUTH_SESSION_SECRET = requireEnv("AUTH_SESSION_SECRET");
@@ -190,7 +209,9 @@ function clearSessionCookie(): string {
 }
 
 app.addHook("onRequest", async (req, reply) => {
-  if (requestPath(req) === "/_login") return;
+  const reqPath = requestPath(req);
+  if (reqPath === "/_login") return;
+  if (PUBLIC_PATHS.has(reqPath)) return; // site icons load before sign-in
   if (currentUser(req)) return;
 
   const next = encodeURIComponent(req.url || "/");
@@ -223,6 +244,11 @@ app.get("/:space/_assets/*", async (req, reply) => {
   }
   return reply.sendFile(params["*"], assetsRoot);
 });
+
+// Bundled site icons (favicons, app icons) served from app/public at the root.
+for (const file of PUBLIC_FILES) {
+  app.get(`/${file}`, async (_req, reply) => reply.sendFile(file, PUBLIC_DIR));
+}
 
 /** Best-effort git commit date+time for a file; falls back to null. */
 async function gitUpdated(fsPath: string): Promise<string | null> {

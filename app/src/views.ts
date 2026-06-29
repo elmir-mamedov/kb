@@ -45,7 +45,7 @@ function renderTree(
   return `<ul>${items}</ul>`;
 }
 
-/** Per-page ⋯ menu: create a child (auto-promoting a leaf), edit, or delete. */
+/** Per-page ⋯ menu: create a child (auto-promoting a leaf), edit, archive, or delete. */
 function treeMenu(slug: string): string {
   return `<details class="tree-menu">
     <summary aria-label="Page actions">⋯</summary>
@@ -55,6 +55,9 @@ function treeMenu(slug: string): string {
         <button type="submit">New page</button>
       </form>
       <a href="/_edit${slugPath(slug)}">Edit</a>
+      <form method="post" action="/_archive${slugPath(slug)}">
+        <button type="submit">Archive</button>
+      </form>
       <a href="/_delete${slugPath(slug)}">Delete</a>
     </div>
   </details>`;
@@ -279,6 +282,7 @@ export function layout(v: PageView): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+${FAVICON_TAGS}
 <title>${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
 <style>${STYLES}</style>
 </head>
@@ -376,6 +380,7 @@ export function editLayout(v: EditView): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+${FAVICON_TAGS}
 <title>Edit ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
 <style>${STYLES}</style>
 </head>
@@ -420,6 +425,7 @@ export function loginLayout(v: LoginView): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+${FAVICON_TAGS}
 <title>Sign in · ${escapeHtml(v.siteTitle)}</title>
 <style>${STYLES}</style>
 </head>
@@ -490,6 +496,7 @@ export function spacesLayout(v: SpacesView): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+${FAVICON_TAGS}
 <title>Spaces · ${escapeHtml(v.siteTitle)}</title>
 <style>${STYLES}</style>
 </head>
@@ -512,6 +519,18 @@ ${sessionCorner(v.username)}
 </body>
 </html>`;
 }
+
+/**
+ * Site icon links, shared by every page head. The files live in app/public and
+ * are served from the site root (see server.ts). The .ico covers legacy
+ * browsers and the automatic /favicon.ico request; the SVG and sized PNGs cover
+ * modern tabs, bookmarks, and iOS home-screen shortcuts.
+ */
+const FAVICON_TAGS = `<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/svg+xml" href="/flux.svg" />
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />`;
 
 /** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
 const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
