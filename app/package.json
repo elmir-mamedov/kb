@@ -8,7 +8,8 @@
     "dev": "tsx watch src/server.ts",
     "mcp": "tsx src/mcp.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",

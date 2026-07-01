@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { Content, type PageNode, type TreeFilter } from "./content.js";
+import { Content, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +28,8 @@ interface ListedPage {
   title: string;
   path: string;
   isSection: boolean;
+  /** True when this is a pure container (folder), not a content page. */
+  isFolder: boolean;
   archived: boolean;
   archivedAt?: string;
   children: ListedPage[];
@@ -85,6 +87,7 @@ function listedPage(node: PageNode): ListedPage {
     title: node.title,
     path: kbRelPath(node.fsPath),
     isSection: node.isSection,
+    isFolder: node.isFolder,
     archived: node.archived,
     archivedAt: node.archivedAt,
     children: node.children.map(listedPage),
@@ -93,6 +96,24 @@ function listedPage(node: PageNode): ListedPage {
 
 function flatten(nodes: PageNode[]): PageNode[] {
   return nodes.flatMap((node) => [node, ...flatten(node.children)]);
+}
+
+/** Map over items with bounded concurrency, preserving input order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function asJsonText(value: unknown): string {
@@ -191,16 +212,23 @@ async function searchPages(
   const nodes = flatten(
     space ? await content.spaceTree(space, filter) : await content.tree(filter)
   );
-  const matches: SearchMatch[] = [];
 
-  for (const node of nodes) {
-    let page: Awaited<ReturnType<Content["load"]>>;
+  // Load pages concurrently instead of serially. The tree walk above has
+  // already warmed Content's parse cache, so these resolve to cheap cache hits;
+  // bounded concurrency keeps the cold path from opening too many files at once.
+  const pages = await mapWithConcurrency(nodes, 32, async (node) => {
     try {
-      page = await content.load(node.slug);
+      return await content.load(node.slug);
     } catch {
-      continue;
+      return null; // skip pages with unreadable or invalid frontmatter
     }
+  });
+
+  const matches: SearchMatch[] = [];
+  for (const page of pages) {
     if (!page) continue;
+    // Folders are pure containers with no body to match — skip them.
+    if (isFolderPage(page.data)) continue;
 
     const score = scorePage(query, page);
     if (score === 0) continue;
@@ -231,7 +259,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages; pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_update_page (replace raw Markdown), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages (each listed page reports isFolder); pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`.",
   }
 );
 
@@ -322,9 +350,24 @@ server.registerTool(
     }
     if (!page) return errorResult(`Page not found: ${clean || "(home)"}`);
 
+    // A folder has no body — return its contents listing instead.
+    if (isFolderPage(page.data)) {
+      const tree = await content.spaceTree(content.spaceKeyOf(page.slug));
+      const node = flatten(tree).find((n) => n.slug === page.slug);
+      return textResult({
+        slug: page.slug,
+        title: page.data.title,
+        isFolder: true,
+        frontmatter: page.data,
+        path: kbRelPath(page.fsPath),
+        children: (node?.children ?? []).map(listedPage),
+      });
+    }
+
     return textResult({
       slug: page.slug,
       title: page.data.title,
+      isFolder: false,
       frontmatter: page.data,
       path: kbRelPath(page.fsPath),
       body: page.body,
@@ -408,11 +451,76 @@ server.registerTool(
 );
 
 server.registerTool(
+  "kb_create_folder",
+  {
+    title: "Create KB Folder",
+    description:
+      "Create a folder — a pure container — inside a space or page. A folder only holds pages and other folders; it has no body and is not a content page (use kb_create_page for that). Drop items into it with kb_move_page or by creating them under it. A leaf-page parent is auto-promoted into a section. Every folder must live inside a space, so the parent is required; use kb_create_space for a new top-level space.",
+    inputSchema: {
+      parent: z
+        .string()
+        .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. Required; folders cannot be created at the root."),
+      title: z.string().min(1).describe("Folder display name; also slugified into the (stable) folder URL."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ parent, title }) => {
+    try {
+      const mutation = await content.createFolder(parent ?? "", title);
+      const message = `Create ${git.kbRelPath(mutation.fsPath)} via mcp`;
+      const commit = mutation.changedFsPaths
+        ? await git.commitMovedPaths(mutation.changedFsPaths, message)
+        : await git.commitFiles([mutation.fsPath], message);
+      return textResult({
+        created: true,
+        slug: mutation.slug,
+        path: git.kbRelPath(mutation.fsPath),
+        commit,
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_rename_folder",
+  {
+    title: "Rename KB Folder",
+    description:
+      "Change a folder's display name. Only the name changes — the folder's URL slug stays stable (use kb_move_page to relocate it). Applies to folders only; content pages use kb_update_page / kb_rename_page.",
+    inputSchema: {
+      slug: z.string().min(1).describe("Folder slug, e.g. flux/runbooks."),
+      name: z.string().min(1).describe("New display name for the folder."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, name }) => {
+    try {
+      const mutation = await content.renameFolder(slug, name);
+      if (!mutation) return errorResult(`Folder not found: ${cleanSlug(slug)}`);
+      const commit = mutation.changedFsPaths.length
+        ? await git.commitFiles(mutation.changedFsPaths, `Rename folder ${mutation.slug} via mcp`)
+        : null;
+      return textResult({ renamed: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
   "kb_update_page",
   {
     title: "Update KB Page",
     description:
-      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required). Read the current source first with kb_get_page (format: raw).",
+      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required). Read the current source first with kb_get_page (format: raw). Folders have no body and are rejected — use kb_rename_folder to rename one.",
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
