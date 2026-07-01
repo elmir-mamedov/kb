@@ -14,3 +14,6 @@ dist/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Claude Code local config (settings, local skills) — machine-specific
+.claude/

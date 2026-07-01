@@ -25,7 +25,7 @@ For content, use lowercase hyphenated Markdown filenames because paths become UR
 
 ## Testing Guidelines
 
-No test framework is configured yet. Before submitting code, run `npm run typecheck` and manually smoke-test key routes with `npm run dev`. If adding tests, add an explicit npm script and keep fixtures close to the code or under a clearly named test fixture directory.
+Tests use Node's built-in runner (`node:test`) executed through `tsx`; run them with `npm test` from `app/`. Test files live next to the code they cover as `src/*.test.ts`, and shared setup (throwaway KB dirs, git identity) is in `src/test-helpers.ts`. No extra dependencies are required. Before submitting code, run `npm run typecheck` and `npm test`, and manually smoke-test key routes with `npm run dev`.
 
 ## Commit & Pull Request Guidelines
 

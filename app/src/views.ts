@@ -33,8 +33,12 @@ function renderTree(
           ? `<button type="button" class="tree-toggle" aria-label="Toggle subpages" aria-expanded="true"></button>`
           : `<span class="tree-toggle-spacer"></span>`
         : "";
+      // Only real folders (pure containers) carry the folder icon, so it reads
+      // as "container" — distinct from an ordinary content page that merely
+      // happens to have child pages.
+      const folderIcon = n.isFolder ? FOLDER_ICON : "";
       const row = options.dragEnabled
-        ? `<div class="tree-row">${toggle}${label}${treeMenu(n.slug)}</div>`
+        ? `<div class="tree-row">${toggle}${folderIcon}${label}${treeMenu(n)}</div>`
         : label;
       const children = hasChildren
         ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
@@ -45,16 +49,37 @@ function renderTree(
   return `<ul>${items}</ul>`;
 }
 
-/** Per-page ⋯ menu: create a child (auto-promoting a leaf), edit, archive, or delete. */
-function treeMenu(slug: string): string {
+/**
+ * Per-node ⋯ menu. Every node can hold children (New page / New folder). A
+ * folder is a pure container, so it gets a Rename control and NO Edit/Download;
+ * ordinary pages keep Edit/Download. Creating a folder prompts for its name.
+ */
+function treeMenu(node: PageNode): string {
+  const slug = node.slug;
+  const newPage = `<form method="post" action="/_create">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(slug)}" />
+        <button type="submit">New page</button>
+      </form>`;
+  const newFolder = `<form class="menu-name-form" method="post" action="/_create-folder">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(slug)}" />
+        <input type="text" name="name" placeholder="Folder name" required />
+        <button type="submit">New folder</button>
+      </form>`;
+  // Folders: rename the display name in place. Pages: edit body / download.
+  const middle = node.isFolder
+    ? `<form class="menu-name-form" method="post" action="/_rename-folder">
+        <input type="hidden" name="slug" value="${escapeHtml(slug)}" />
+        <input type="text" name="name" value="${escapeHtml(node.title)}" required />
+        <button type="submit">Rename</button>
+      </form>`
+    : `<a href="/_edit${slugPath(slug)}">Edit</a>
+      <a href="/_download${slugPath(slug)}" download>Download</a>`;
   return `<details class="tree-menu">
     <summary aria-label="Page actions">⋯</summary>
     <div class="tree-menu-pop">
-      <form method="post" action="/_create">
-        <input type="hidden" name="parentSlug" value="${escapeHtml(slug)}" />
-        <button type="submit">New page</button>
-      </form>
-      <a href="/_edit${slugPath(slug)}">Edit</a>
+      ${newPage}
+      ${newFolder}
+      ${middle}
       <form method="post" action="/_archive${slugPath(slug)}">
         <button type="submit">Archive</button>
       </form>
@@ -207,10 +232,20 @@ function sidebarHtml(
   return `<aside class="sidebar">
   <a class="brand" href="/">${escapeHtml(siteTitle)}</a>
   ${switcher}
-  <form class="sidebar-form" method="post" action="/_create">
-    <input type="hidden" name="parentSlug" value="${escapeHtml(spaceKey)}" />
-    <button class="sidebar-link sidebar-button" type="submit">Create page</button>
-  </form>
+  <details class="create-menu">
+    <summary class="sidebar-link">Create</summary>
+    <div class="create-menu-pop">
+      <form method="post" action="/_create">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(spaceKey)}" />
+        <button type="submit">Page</button>
+      </form>
+      <form class="menu-name-form" method="post" action="/_create-folder">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(spaceKey)}" />
+        <input type="text" name="name" placeholder="Folder name" required />
+        <button type="submit">Folder</button>
+      </form>
+    </div>
+  </details>
   <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
   ${spaceRootDrop}
   <nav class="tree">${renderTree(tree, activeSlug, {
@@ -256,7 +291,11 @@ export function layout(v: PageView): string {
   const editLink =
     v.canEdit === false
       ? ""
-      : `<a class="button secondary" href="/_edit${slugPath(v.activeSlug)}">Edit</a>`;
+      : `<a class="button secondary" href="/_edit${slugPath(v.activeSlug)}" data-edit-link>Edit</a>`;
+  const downloadLink =
+    v.canEdit === false || !v.activeSlug
+      ? ""
+      : `<a class="button secondary" href="/_download${slugPath(v.activeSlug)}" download>Download</a>`;
   const archiveAction =
     v.canEdit === false || v.isArchived || !v.activeSlug
       ? ""
@@ -296,12 +335,117 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchi
       <h1>${escapeHtml(v.title)}</h1>
       <div class="meta">${metaInner}</div>
     </div>
-    <div class="actions">${editLink}${archiveAction}${deleteAction}${restoreAction}</div>
+    <div class="actions">${editLink}${downloadLink}${archiveAction}${deleteAction}${restoreAction}</div>
   </header>
   ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
 </main>
+<script>${EDIT_SHORTCUT_SCRIPT}</script>
 ${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
+</body>
+</html>`;
+}
+
+export interface FolderView {
+  siteTitle: string;
+  spaces: SpaceInfo[];
+  spaceKey: string;
+  tree: PageNode[];
+  activeSlug: string;
+  titles: Map<string, string>;
+  title: string;
+  /** The folder's direct children, rendered as the contents listing. */
+  children: PageNode[];
+  isArchived?: boolean;
+  archivedAt?: string;
+  notice?: ViewNotice;
+  username?: string | null;
+}
+
+/**
+ * A folder is a pure container: no prose body, no Edit/Download. This renders
+ * its contents as a listing plus controls to create items inside it, rename it
+ * (display name only), archive, or delete. Moving a folder is done by dragging
+ * it in the sidebar, the same as pages. Its location is shown in the breadcrumb.
+ */
+export function folderLayout(v: FolderView): string {
+  const listing = v.children.length
+    ? `<ul class="folder-list">${v.children
+        .map((c) => {
+          const icon = c.isFolder ? FOLDER_ICON : "";
+          return `<li>${icon}<a href="${slugPath(c.slug)}">${escapeHtml(c.title)}</a></li>`;
+        })
+        .join("")}</ul>`
+    : `<p class="folder-empty">This folder is empty. Use “New page” or “New folder” to add items.</p>`;
+
+  const createControls = v.isArchived
+    ? ""
+    : `<div class="folder-create">
+      <form method="post" action="/_create">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(v.activeSlug)}" />
+        <button class="button secondary" type="submit">New page</button>
+      </form>
+      <form class="menu-name-form" method="post" action="/_create-folder">
+        <input type="hidden" name="parentSlug" value="${escapeHtml(v.activeSlug)}" />
+        <input type="text" name="name" placeholder="Folder name" required />
+        <button class="button secondary" type="submit">New folder</button>
+      </form>
+    </div>`;
+
+  const renameControl = v.isArchived
+    ? ""
+    : `<details class="rename-menu">
+    <summary class="button secondary">Rename</summary>
+    <form class="menu-name-form" method="post" action="/_rename-folder">
+      <input type="hidden" name="slug" value="${escapeHtml(v.activeSlug)}" />
+      <input type="text" name="name" value="${escapeHtml(v.title)}" required />
+      <button type="submit">Save</button>
+    </form>
+  </details>`;
+  const archiveAction = v.isArchived
+    ? ""
+    : actionForm("/_archive", v.activeSlug, "Archive", "danger");
+  const restoreAction = v.isArchived
+    ? actionForm("/_restore", v.activeSlug, "Restore", "primary")
+    : "";
+  const deleteAction = `<a class="button danger" href="/_delete${slugPath(v.activeSlug)}">Delete</a>`;
+
+  const archivedAt = v.archivedAt ? ` on ${escapeHtml(v.archivedAt)}` : "";
+  const archivedBanner = v.isArchived
+    ? `<div class="notice archived"><strong>Archived.</strong> This folder is hidden from normal navigation${archivedAt}.</div>`
+    : "";
+  const notice = v.notice
+    ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
+    : "";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+${FAVICON_TAGS}
+<title>${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
+<style>${STYLES}</style>
+</head>
+<body>
+${sessionCorner(v.username)}
+${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, false)}
+<main class="content">
+  ${breadcrumb(v.activeSlug, v.titles)}
+  <header class="page-head">
+    <div>
+      <h1>${escapeHtml(v.title)}</h1>
+      <div class="meta"><span class="folder-tag">Folder</span></div>
+    </div>
+    <div class="actions">${renameControl}${archiveAction}${deleteAction}${restoreAction}</div>
+  </header>
+  ${notice}${archivedBanner}
+  <section class="folder-view">
+    ${createControls}
+    ${listing}
+  </section>
+</main>
+<script>${MOVE_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -532,6 +676,9 @@ const FAVICON_TAGS = `<link rel="icon" href="/favicon.ico" sizes="any" />
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />`;
 
+/** Inline folder glyph prefixed to section rows in the sidebar tree. */
+const FOLDER_ICON = `<svg class="tree-folder-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M1.75 4c0-.69.56-1.25 1.25-1.25h2.94c.33 0 .65.13.88.37l.87.88c.05.04.11.07.18.07H13c.69 0 1.25.56 1.25 1.25v6.06c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z"/></svg>`;
+
 /** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
 const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   <form method="dialog" class="help-head">
@@ -540,11 +687,13 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   </form>
   <section class="help-section">
     <h3>About Flux</h3>
-    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, or delete it.</p>
+    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
   </section>
   <section class="help-section">
     <h3>Keyboard shortcuts</h3>
     <dl class="help-keys">
+      <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>E</kbd></dt>
+      <dd>Edit the page you are viewing</dd>
       <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>S</kbd></dt>
       <dd>Save the page you are editing</dd>
       <dt><kbd>Esc</kbd></dt>
@@ -561,6 +710,24 @@ const HELP_SCRIPT = `
   openBtn.addEventListener("click", () => {
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
+  });
+})();
+`;
+
+/**
+ * Cmd/Ctrl+E opens the editor for the page being viewed. It reads the target
+ * from the page's own Edit link, so it is inert on views without one (the
+ * archive browser, 404s, system notices).
+ */
+const EDIT_SHORTCUT_SCRIPT = `
+(() => {
+  const link = document.querySelector("[data-edit-link]");
+  if (!link) return;
+  document.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== "e") return;
+    event.preventDefault();
+    window.location.href = link.href;
   });
 })();
 `;
@@ -768,17 +935,60 @@ a:hover{text-decoration:underline}
 .brand{display:block; font-weight:700; font-size:15px; color:var(--fg);
   margin-bottom:16px; letter-spacing:.2px}
 .brand:hover{text-decoration:none}
-.sidebar-form{margin:0}
 .sidebar-link{
   display:block; margin:0 0 14px; padding:4px 6px; border-radius:6px;
   color:#374151; font-size:14px; font-weight:600;
 }
 .sidebar-link:hover{background:#eef0f3; text-decoration:none}
 .sidebar-link.active{background:#e7efff; color:var(--accent)}
-.sidebar-button{
-  width:100%; border:0; background:transparent; text-align:left;
-  font:600 14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  cursor:pointer;
+/* "Create" disclosure: a sidebar link that reveals Page / Folder choices. */
+.create-menu{margin:0 0 14px}
+.create-menu>summary{margin:0; list-style:none; cursor:pointer}
+.create-menu>summary::-webkit-details-marker{display:none}
+.create-menu>summary::marker{content:""}
+.create-menu-pop{
+  margin:6px 0 0; padding:4px; display:flex; flex-direction:column;
+  background:#fff; border:1px solid var(--line); border-radius:6px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);
+}
+.create-menu-pop form{margin:0}
+.create-menu-pop button{
+  display:block; width:100%; text-align:left; border:0; background:transparent;
+  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  cursor:pointer; font-family:inherit;
+}
+.create-menu-pop button:hover{background:#eef0f3}
+/* Inline name forms (create-folder + rename) in the Create / ⋯ menus. */
+.menu-name-form{display:flex; flex-direction:column; gap:4px; margin:0}
+.menu-name-form input[type=text]{
+  width:100%; box-sizing:border-box; padding:5px 7px; font-size:13px;
+  border:1px solid var(--line); border-radius:4px;
+}
+/* Folder contents view */
+.folder-tag{
+  display:inline-block; padding:2px 8px; border-radius:999px;
+  background:#eef0f3; color:var(--muted); font-size:12px; font-weight:600;
+}
+.folder-view{margin-top:8px}
+.folder-create{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-bottom:18px}
+.folder-create form{margin:0}
+.folder-create .menu-name-form{flex-direction:row; align-items:center}
+.folder-create .menu-name-form input[type=text]{width:160px}
+.folder-list{list-style:none; padding:0; margin:0; border-top:1px solid var(--line)}
+.folder-list li{
+  display:flex; align-items:center; gap:6px; padding:9px 4px;
+  border-bottom:1px solid var(--line);
+}
+.folder-list li>a{font-weight:600}
+.folder-empty{color:var(--muted); margin:18px 0}
+.rename-menu{display:inline-block; position:relative}
+.rename-menu>summary{list-style:none; cursor:pointer}
+.rename-menu>summary::-webkit-details-marker{display:none}
+.rename-menu>summary::marker{content:""}
+.rename-menu .menu-name-form{
+  position:absolute; right:0; z-index:5; margin-top:6px; width:210px; padding:8px;
+  background:#fff; border:1px solid var(--line); border-radius:6px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);
 }
 .root-drop{
   margin:0 0 14px; padding:5px 6px; border:1px dashed var(--line);
@@ -808,6 +1018,7 @@ a:hover{text-decoration:underline}
 .tree li.collapsed > .tree-row .tree-toggle::before{transform:rotate(0deg)}
 .tree-toggle:hover{color:var(--fg)}
 .tree-toggle-spacer{flex:0 0 auto; width:18px}
+.tree-folder-icon{flex:0 0 auto; width:14px; height:14px; margin-right:2px; color:var(--muted)}
 .tree li.collapsed > .children{display:none}
 .tree-row{position:relative; display:flex; align-items:center}
 .tree-row>a{

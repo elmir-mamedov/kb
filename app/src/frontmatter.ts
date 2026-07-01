@@ -12,6 +12,12 @@ export const FrontmatterSchema = z.object({
   summary: z.string().optional(),
   /** Optional emoji shown on the space card; only meaningful on a space's index.md. */
   icon: z.string().optional(),
+  /**
+   * Marks a directory's index.md as a pure container ("folder") rather than a
+   * content page. Only "folder" is meaningful; its absence means an ordinary
+   * page/section. Kept optional so every existing page validates unchanged.
+   */
+  type: z.literal("folder").optional(),
   archived: z.boolean().optional(),
   archivedAt: z.string().optional(),
 });

@@ -33,11 +33,17 @@ export function makeGit(kbDir: string) {
     return path.join(kbDir, space);
   }
 
-  /** fsPath relative to its space repo root (forward slashes), for `git add`/`commit`. */
+  /**
+   * fsPath relative to its space repo root (forward slashes), for `git add`/`commit`.
+   * Returns "" when fsPath *is* the repo root itself — i.e. a whole space folder,
+   * which is what a space rename or move produces. A space is its own git repo, so
+   * moving its folder carries `.git` along and changes nothing tracked *inside* the
+   * repo; callers treat "" as "nothing to commit here" and skip it.
+   */
   function relInRepo(fsPath: string): string {
     const repoRoot = spaceRepoRoot(fsPath);
     const rel = path.relative(repoRoot, fsPath);
-    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
       throw new Error("Refusing to commit a file outside its space repo.");
     }
     return rel.split(path.sep).join("/");
@@ -47,8 +53,12 @@ export function makeGit(kbDir: string) {
   function groupByRepo(fsPaths: string[]): Map<string, string[]> {
     const groups = new Map<string, string[]>();
     for (const fsPath of fsPaths) {
-      const repoRoot = spaceRepoRoot(fsPath);
       const rel = relInRepo(fsPath);
+      // A space-root path (rel === "") means a whole space folder was renamed or
+      // moved. That is not a change inside any repo, so there is nothing to add
+      // or commit — skip it rather than failing the whole commit.
+      if (rel === "") continue;
+      const repoRoot = spaceRepoRoot(fsPath);
       const rels = groups.get(repoRoot);
       if (rels) {
         if (!rels.includes(rel)) rels.push(rel);

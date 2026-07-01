@@ -13,6 +13,13 @@ export interface PageNode {
   fsPath: string;
   /** True when backed by a folder + index.md. */
   isSection: boolean;
+  /**
+   * True when this is a pure container (index.md carries `type: folder`).
+   * A folder is always also a section (`isFolder ⇒ isSection`); the reverse is
+   * not true — an ordinary content page can have children and still be a
+   * section. Only folders show the folder icon and render as a contents listing.
+   */
+  isFolder: boolean;
   /** True when the backing page has archived: true in frontmatter. */
   archived: boolean;
   archivedAt?: string;
@@ -91,6 +98,18 @@ export interface MoveMutation {
  * the same folder the MCP server will write to in a later step.
  */
 export class Content {
+  /**
+   * Read+parse cache keyed by absolute file path and invalidated whenever the
+   * file's mtime changes. The navigation walk and per-page loads share it, so
+   * each file is read and parsed at most once per modification instead of once
+   * per caller — search previously read every page twice (once to build the
+   * tree, once to score it).
+   */
+  private parseCache = new Map<
+    string,
+    { data: Frontmatter; body: string; mtimeMs: number }
+  >();
+
   constructor(private root: string) {
     this.root = path.resolve(root);
   }
@@ -174,13 +193,18 @@ export class Content {
         let backing = dirPath;
         let archived = false;
         let archivedAt: string | undefined;
+        let ownMtime: number | undefined;
+        let isFolder = false;
         try {
-          const raw = await fs.readFile(indexPath, "utf8");
-          const data = parsePage(raw, indexPath).data;
-          title = data.title;
-          archived = data.archived === true;
-          archivedAt = data.archivedAt;
-          backing = indexPath;
+          const parsed = await this.readParsed(indexPath);
+          if (parsed) {
+            title = parsed.data.title;
+            archived = parsed.data.archived === true;
+            archivedAt = parsed.data.archivedAt;
+            backing = indexPath;
+            ownMtime = parsed.mtimeMs;
+            isFolder = isFolderPage(parsed.data);
+          }
         } catch {
           /* no/invalid index.md — still a navigable container */
         }
@@ -189,7 +213,7 @@ export class Content {
         // or any descendant, so recently-touched branches sort to the top.
         const modifiedMs = children.reduce(
           (max, child) => Math.max(max, child.modifiedMs),
-          await mtimeMs(backing)
+          ownMtime ?? (await mtimeMs(backing))
         );
         if (this.includeNode(filter, archived, children.length)) {
           nodes.push({
@@ -197,6 +221,7 @@ export class Content {
             title,
             fsPath: backing,
             isSection: true,
+            isFolder,
             archived,
             archivedAt,
             modifiedMs,
@@ -210,18 +235,21 @@ export class Content {
         let title = base;
         let archived = false;
         let archivedAt: string | undefined;
+        let ownMtime: number | undefined;
         try {
-          const raw = await fs.readFile(fsPath, "utf8");
-          const data = parsePage(raw, fsPath).data;
-          title = data.title;
-          archived = data.archived === true;
-          archivedAt = data.archivedAt;
+          const parsed = await this.readParsed(fsPath);
+          if (parsed) {
+            title = parsed.data.title;
+            archived = parsed.data.archived === true;
+            archivedAt = parsed.data.archivedAt;
+            ownMtime = parsed.mtimeMs;
+          }
         } catch {
           /* fall back to filename */
         }
-        const modifiedMs = await mtimeMs(fsPath);
+        const modifiedMs = ownMtime ?? (await mtimeMs(fsPath));
         if (this.includeNode(filter, archived, 0)) {
-          nodes.push({ slug, title, fsPath, isSection: false, archived, archivedAt, modifiedMs, children: [] });
+          nodes.push({ slug, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, children: [] });
         }
       }
     }
@@ -264,13 +292,45 @@ export class Content {
     return null;
   }
 
+  /**
+   * Read + parse a markdown file, memoized by mtime. Returns null when the
+   * file can't be stat'd or read; propagates parsePage errors (invalid
+   * frontmatter) so callers can surface them — the navigation walk wraps this
+   * in try/catch to fall back to the filename instead.
+   */
+  private async readParsed(
+    fsPath: string
+  ): Promise<{ data: Frontmatter; body: string; mtimeMs: number } | null> {
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await fs.stat(fsPath)).mtimeMs;
+    } catch {
+      return null;
+    }
+
+    const cached = this.parseCache.get(fsPath);
+    if (cached && cached.mtimeMs === mtimeMs) return cached;
+
+    let raw: string;
+    try {
+      raw = await fs.readFile(fsPath, "utf8");
+    } catch {
+      return null;
+    }
+
+    const { data, body } = parsePage(raw, fsPath);
+    const entry = { data, body, mtimeMs };
+    this.parseCache.set(fsPath, entry);
+    return entry;
+  }
+
   /** Load and parse a page by slug. */
   async load(slug: string): Promise<LoadedPage | null> {
     const fsPath = await this.resolve(slug);
     if (!fsPath) return null;
-    const raw = await fs.readFile(fsPath, "utf8");
-    const { data, body } = parsePage(raw, fsPath);
-    return { slug: cleanSlug(slug), data, body, fsPath };
+    const parsed = await this.readParsed(fsPath);
+    if (!parsed) return null;
+    return { slug: cleanSlug(slug), data: parsed.data, body: parsed.body, fsPath };
   }
 
   /** Load the original markdown document, including frontmatter. */
@@ -285,6 +345,15 @@ export class Content {
   async updateRaw(slug: string, raw: string): Promise<RawPage | null> {
     const fsPath = await this.resolve(slug);
     if (!fsPath) return null;
+
+    // Folders are pure containers with no editable body. Check the *on-disk*
+    // frontmatter (not the incoming raw) so a caller can't strip the
+    // `type: folder` marker to sneak a body onto a folder.
+    const current = await this.readParsed(fsPath);
+    if (current && isFolderPage(current.data)) {
+      throw new Error("Folders have no editable body. Rename or move it instead.");
+    }
+
     parsePage(raw, fsPath);
 
     // Browsers submit <textarea> content with CRLF newlines, so normalise to LF
@@ -322,7 +391,7 @@ export class Content {
       parentPrefix = cleanParent;
     }
 
-    const { name, title } = await this.nextDraftName(parentDir);
+    const { name, title } = await this.nextUntitledName(parentDir, "page");
     const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
     const fsPath = path.join(parentDir, `${name}.md`);
     const raw = matter.stringify(`# ${title}\n\n`, { title });
@@ -386,6 +455,96 @@ export class Content {
     return promotion
       ? { slug, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
       : { slug, fsPath };
+  }
+
+  /**
+   * Create a folder (a section) inside a space/section. A folder is a directory
+   * with an `index.md` landing page; pages or other folders can then be dropped
+   * into it. When `title` is omitted an "Untitled Folder" draft is created (the
+   * web flow, which then opens the editor to name it); MCP passes a real title.
+   * A leaf-page parent is auto-promoted into a section first.
+   */
+  async createFolder(parentSlug: string, title?: string): Promise<CreatePageMutation> {
+    const cleanParent = cleanSlug(parentSlug);
+    if (!cleanParent) {
+      throw new Error("Folders must live inside a space.");
+    }
+
+    const parentFsPath = await this.resolve(cleanParent);
+    if (!parentFsPath) {
+      throw new Error("The destination space or section does not exist.");
+    }
+    const { dir: parentDir, conversion: promotion } = await this.sectionDirFor(parentFsPath);
+
+    const trimmed = (title ?? "").trim();
+    let folderName: string;
+    let folderTitle: string;
+    if (trimmed) {
+      const base = slugify(trimmed);
+      if (!base) {
+        throw new Error("The folder title must contain letters or numbers.");
+      }
+      folderName = await this.nextPageName(parentDir, base);
+      folderTitle = trimmed;
+    } else {
+      const draft = await this.nextUntitledName(parentDir, "folder");
+      folderName = draft.name;
+      folderTitle = draft.title;
+    }
+
+    const folderDir = path.join(parentDir, folderName);
+    const indexPath = path.join(folderDir, "index.md");
+    // A folder is a pure container: its index.md carries only the display name
+    // and the `type: folder` marker, with no body to edit.
+    const raw = matter.stringify("", { title: folderTitle, type: "folder" });
+    parsePage(raw, indexPath);
+
+    if (promotion) await this.applyPromotion(promotion);
+    await fs.mkdir(folderDir, { recursive: true });
+    await fs.writeFile(indexPath, raw, { encoding: "utf8", flag: "wx" });
+
+    const slug = `${cleanParent}/${folderName}`;
+    return promotion
+      ? { slug, fsPath: indexPath, changedFsPaths: [promotion.from, promotion.to, indexPath] }
+      : { slug, fsPath: indexPath };
+  }
+
+  /**
+   * Rename a folder's display name (rewrites only its index.md `title`). The
+   * slug and directory are deliberately left untouched — a folder's URL is
+   * stable; use movePage to change its location. Returns an empty
+   * `changedFsPaths` when the name is unchanged so the caller skips a spurious
+   * commit; returns null when the slug does not resolve.
+   */
+  async renameFolder(
+    slug: string,
+    name: string
+  ): Promise<{ slug: string; fsPath: string; changedFsPaths: string[] } | null> {
+    const clean = cleanSlug(slug);
+    const fsPath = await this.resolve(clean);
+    if (!fsPath) return null;
+
+    const raw = await fs.readFile(fsPath, "utf8");
+    const { data } = parsePage(raw, fsPath);
+    if (!isFolderPage(data)) {
+      throw new Error("Only folders can be renamed this way.");
+    }
+
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("The folder name is required.");
+    }
+    if (data.title === trimmed) {
+      return { slug: clean, fsPath, changedFsPaths: [] };
+    }
+
+    const parsed = matter(raw);
+    const nextData = { ...parsed.data, title: trimmed } as Record<string, unknown>;
+    const nextRaw = matter.stringify(parsed.content, nextData);
+    parsePage(nextRaw, fsPath);
+
+    await fs.writeFile(fsPath, nextRaw, "utf8");
+    return { slug: clean, fsPath, changedFsPaths: [fsPath] };
   }
 
   /** Create a new space: a top-level folder with an index.md home page. */
@@ -582,10 +741,20 @@ export class Content {
 
     await fs.rename(sourcePath, destinationPath);
 
+    // Renaming a top-level space renames its whole folder, which carries the
+    // space's own `.git` with it — the move itself is invisible to git. But the
+    // caller may have just rewritten the space's index.md (the web editor saves
+    // content, then renames), so include the moved index.md: the git layer skips
+    // the space-root dirs and commits index.md only if its content changed.
+    const isSpaceRename = parentSlug === "" && sourceIsSection;
+    const changedFsPaths = isSpaceRename
+      ? [sourcePath, destinationPath, path.join(destinationPath, "index.md")]
+      : [sourcePath, destinationPath];
+
     return {
       oldSlug: cleanSource,
       newSlug,
-      changedFsPaths: uniquePaths([sourcePath, destinationPath]),
+      changedFsPaths: uniquePaths(changedFsPaths),
     };
   }
 
@@ -650,20 +819,25 @@ export class Content {
     return files.sort((a, b) => a.localeCompare(b));
   }
 
-  private async nextDraftName(baseDir: string): Promise<{ name: string; title: string }> {
+  private async nextUntitledName(
+    baseDir: string,
+    kind: "page" | "folder" = "page"
+  ): Promise<{ name: string; title: string }> {
+    const nameBase = kind === "folder" ? "untitled-folder" : "untitled-page";
+    const titleBase = kind === "folder" ? "Untitled Folder" : "Untitled Page";
     for (let index = 1; index < 10_000; index += 1) {
       const suffix = index === 1 ? "" : `-${index}`;
       const titleSuffix = index === 1 ? "" : ` ${index}`;
-      const name = `untitled-page${suffix}`;
+      const name = `${nameBase}${suffix}`;
       const candidateFile = path.join(baseDir, `${name}.md`);
       const candidateDir = path.join(baseDir, name);
 
       if (!(await exists(candidateFile)) && !(await exists(candidateDir))) {
-        return { name, title: `Untitled Page${titleSuffix}` };
+        return { name, title: `${titleBase}${titleSuffix}` };
       }
     }
 
-    throw new Error("Could not find an available draft page slug.");
+    throw new Error(`Could not find an available ${kind} slug.`);
   }
 
   private async nextPageName(baseDir: string, base: string): Promise<string> {
@@ -794,6 +968,26 @@ Thumbs.db
 
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
+}
+
+/**
+ * A page is a "folder" (pure container) when its frontmatter declares
+ * `type: folder`. Single source of truth, shared by the content, server, and
+ * MCP layers so folder detection can never drift between them.
+ */
+export function isFolderPage(data: Frontmatter): boolean {
+  return data.type === "folder";
+}
+
+/**
+ * Filename for a page downloaded as Markdown: its slug leaf + ".md". Slug
+ * segments are already lowercase-hyphenated and URL-safe, so this is safe to
+ * drop into a Content-Disposition header. Falls back to "page.md" for the
+ * (leaf-less) home page.
+ */
+export function downloadFilename(slug: string): string {
+  const leaf = cleanSlug(slug).split("/").filter(Boolean).at(-1) ?? "";
+  return `${leaf || "page"}.md`;
 }
 
 /** Normalise CRLF/CR line endings to LF so saves compare and store consistently. */

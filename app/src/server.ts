@@ -8,10 +8,13 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import {
   Content,
+  downloadFilename,
+  isFolderPage,
   type ArchiveMutation,
   type CreatePageMutation,
   type DeleteMutation,
   type MoveMutation,
+  type PageNode,
 } from "./content.js";
 import { makeGit } from "./git.js";
 import { createRenderer } from "./markdown.js";
@@ -20,6 +23,7 @@ import {
   deleteLayout,
   editLayout,
   escapeHtml,
+  folderLayout,
   layout,
   loginLayout,
   notFound,
@@ -311,6 +315,22 @@ function isInsideDir(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/** Depth-first search for a node by slug within a (possibly nested) tree. */
+function findNode(nodes: PageNode[], slug: string): PageNode | null {
+  for (const n of nodes) {
+    if (n.slug === slug) return n;
+    const hit = findNode(n.children, slug);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** True when the slug resolves to a folder (a pure container with no body). */
+async function slugIsFolder(slug: string): Promise<boolean> {
+  const page = await content.load(slug);
+  return page ? isFolderPage(page.data) : false;
+}
+
 async function renderPage(
   slug: string,
   options: { notice?: ViewNotice } = {}
@@ -330,6 +350,27 @@ async function renderPage(
 
   const spaceKey = content.spaceKeyOf(page.slug);
   const tree = await content.spaceTree(spaceKey);
+
+  // A folder is a pure container: render its contents listing, never prose.
+  if (isFolderPage(page.data)) {
+    const node = findNode(tree, page.slug);
+    const html = folderLayout({
+      siteTitle: SITE_TITLE,
+      spaces,
+      spaceKey,
+      tree,
+      activeSlug: page.slug,
+      titles,
+      title: page.data.title,
+      children: node?.children ?? [],
+      isArchived: page.data.archived === true,
+      archivedAt: page.data.archivedAt,
+      notice: options.notice,
+      username: AUTH_USERNAME,
+    });
+    return { status: 200, html };
+  }
+
   const md = createRenderer((s) => titles.get(s), page.slug);
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
@@ -518,6 +559,78 @@ app.post("/_create", async (req, reply) => {
   }
 
   return reply.redirect(`/_edit${pagePath(mutation.slug)}`, 303);
+});
+
+app.post("/_create-folder", async (req, reply) => {
+  const parentSlug = formString(req.body, "parentSlug") ?? "";
+  const name = formString(req.body, "name") ?? "";
+  let mutation: CreatePageMutation;
+  try {
+    // A folder is created with its name up front; there is nothing to edit
+    // afterwards, so we land on its listing rather than the markdown editor.
+    mutation = await content.createFolder(parentSlug, name);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    return reply
+      .code(500)
+      .type("text/html")
+      .send(await renderSystemNotice("Create failed", notice));
+  }
+
+  try {
+    if (mutation.changedFsPaths) {
+      await git.commitMovedPaths(mutation.changedFsPaths, createCommitMessage(mutation));
+    } else {
+      await git.commitFiles([mutation.fsPath], createCommitMessage(mutation));
+    }
+  } catch (err) {
+    const notice = {
+      tone: "error",
+      text: `Created, but Git commit failed: ${errorMessage(err)}`,
+    } satisfies ViewNotice;
+    const { html } = await renderPage(mutation.slug, { notice });
+    return reply.code(500).type("text/html").send(html);
+  }
+
+  return reply.redirect(pagePath(mutation.slug), 303);
+});
+
+// Rename a folder's display name in place (its URL slug does not change).
+app.post("/_rename-folder", async (req, reply) => {
+  const slug = formString(req.body, "slug") ?? "";
+  const name = formString(req.body, "name") ?? "";
+
+  let mutation: Awaited<ReturnType<typeof content.renameFolder>>;
+  try {
+    mutation = await content.renameFolder(slug, name);
+  } catch (err) {
+    const notice = { tone: "error", text: errorMessage(err) } satisfies ViewNotice;
+    const { html } = await renderPage(slug, { notice });
+    return reply.code(400).type("text/html").send(html);
+  }
+  if (!mutation) {
+    const spaces = await content.spaces();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
+  }
+
+  try {
+    // Empty changedFsPaths means the name was unchanged — skip the commit.
+    if (mutation.changedFsPaths.length) {
+      await git.commitFiles(mutation.changedFsPaths, `Rename folder ${mutation.slug} via web`);
+    }
+  } catch (err) {
+    const notice = {
+      tone: "error",
+      text: `Renamed, but Git commit failed: ${errorMessage(err)}`,
+    } satisfies ViewNotice;
+    const { html } = await renderPage(mutation.slug, { notice });
+    return reply.code(500).type("text/html").send(html);
+  }
+
+  return reply.redirect(pagePath(mutation.slug), 303);
 });
 
 app.post("/_create-space", async (req, reply) => {
@@ -781,12 +894,15 @@ app.get("/", async (_req, reply) => {
 
 app.get("/_edit/*", async (req, reply) => {
   const slug = (req.params as { "*": string })["*"] ?? "";
+  // Folders have no editable body — send the user to the folder listing.
+  if (await slugIsFolder(slug)) return reply.redirect(pagePath(slug), 303);
   const { status, html } = await renderEditPage(slug);
   return reply.code(status).type("text/html").send(html);
 });
 
 app.post("/_edit/*", async (req, reply) => {
   const slug = (req.params as { "*": string })["*"] ?? "";
+  if (await slugIsFolder(slug)) return reply.redirect(pagePath(slug), 303);
   const markdown = formString(req.body, "markdown");
   if (markdown === null) {
     const { status, html } = await renderEditPage(slug, {
@@ -848,6 +964,34 @@ app.post("/_edit/*", async (req, reply) => {
   }
 
   return reply.redirect(pagePath(didRename ? renamed!.newSlug : page.slug));
+});
+
+// Download a page's raw Markdown (frontmatter included) as an attachment.
+app.get("/_download/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  // A folder is a pure container — there is no document to download.
+  if (await slugIsFolder(slug)) {
+    const spaces = await content.spaces();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
+  }
+  const page = await content.loadRaw(slug);
+  if (!page) {
+    const spaces = await content.spaces();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME));
+  }
+  return reply
+    .header(
+      "content-disposition",
+      `attachment; filename="${downloadFilename(page.slug)}"`
+    )
+    .type("text/markdown; charset=utf-8")
+    .send(page.raw);
 });
 
 // Any page by slug (supports nested paths).
