@@ -11,6 +11,11 @@ node_modules/
 dist/
 *.log
 
+# Python — local virtualenv for tooling; never commit
+.venv/
+__pycache__/
+*.pyc
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
