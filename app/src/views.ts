@@ -790,17 +790,41 @@ const EDITOR_SCRIPT = `
 
 const MOVE_SCRIPT = `
 (() => {
-  const dragItems = Array.from(document.querySelectorAll("[data-drag-slug]"));
+  const orderedLinks = Array.from(document.querySelectorAll(".tree a[data-drag-slug]"));
   const dropTargets = Array.from(
     document.querySelectorAll("[data-drop-slug], [data-drop-root]")
   );
   const errorEl = document.querySelector("[data-move-error]");
-  let sourceSlug = "";
+
+  // Multi-selection: shift-click selects an inclusive range from the anchor;
+  // Ctrl/Cmd-click toggles a single item. State is in-memory only — it just
+  // needs to survive from the click until the drag, and navigation reloads.
+  const selected = new Set();
+  let anchorIndex = orderedLinks.findIndex((el) => el.classList.contains("active"));
+  let dragSlugs = [];
+
+  function slugOf(el) {
+    return el.getAttribute("data-drag-slug") || "";
+  }
 
   function sourceParent(slug) {
     const parts = slug.split("/");
     parts.pop();
     return parts.join("/");
+  }
+
+  function applySelection() {
+    for (const el of orderedLinks) {
+      el.classList.toggle("selected", selected.has(slugOf(el)));
+    }
+  }
+
+  function selectRange(a, b) {
+    selected.clear();
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    for (let i = lo; i <= hi; i++) selected.add(slugOf(orderedLinks[i]));
+    applySelection();
   }
 
   function showError(message) {
@@ -819,37 +843,69 @@ const MOVE_SCRIPT = `
   }
 
   function invalidDrop(target) {
-    if (!sourceSlug) return true;
+    if (dragSlugs.length === 0) return true;
     if (target.hasAttribute("data-drop-root")) {
-      return !sourceSlug.includes("/");
+      // Valid only if at least one dragged item is nested (has a parent to leave).
+      return !dragSlugs.some((s) => s.includes("/"));
     }
 
     const targetSlug = target.getAttribute("data-drop-slug") || "";
     if (!targetSlug) return true;
-    if (targetSlug === sourceSlug) return true;
-    if (targetSlug.startsWith(sourceSlug + "/")) return true;
-    if (targetSlug === sourceParent(sourceSlug)) return true;
+    for (const s of dragSlugs) {
+      if (targetSlug === s) return true; // onto itself
+      if (targetSlug.startsWith(s + "/")) return true; // into a descendant
+    }
+    // Pure no-op: every dragged item already lives directly under the target.
+    if (dragSlugs.every((s) => sourceParent(s) === targetSlug)) return true;
     return false;
   }
 
-  for (const item of dragItems) {
-    item.addEventListener("dragstart", (event) => {
-      sourceSlug = item.getAttribute("data-drag-slug") || "";
-      item.classList.add("drag-source");
-      document.body.classList.add("dragging-page");
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", sourceSlug);
+  orderedLinks.forEach((link, index) => {
+    link.addEventListener("click", (event) => {
+      if (event.shiftKey) {
+        event.preventDefault();
+        if (anchorIndex < 0) anchorIndex = index;
+        selectRange(anchorIndex, index);
+        const sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
+      } else if (event.metaKey || event.ctrlKey) {
+        event.preventDefault();
+        const slug = slugOf(link);
+        if (selected.has(slug)) selected.delete(slug);
+        else selected.add(slug);
+        anchorIndex = index;
+        applySelection();
+      } else {
+        // Plain click navigates; drop any lingering selection first.
+        selected.clear();
+        applySelection();
       }
     });
 
-    item.addEventListener("dragend", () => {
-      sourceSlug = "";
-      item.classList.remove("drag-source");
+    link.addEventListener("dragstart", (event) => {
+      const slug = slugOf(link);
+      // Grabbing a selected item drags the whole selection; else just this one.
+      let slugs = selected.has(slug) && selected.size > 0 ? Array.from(selected) : [slug];
+      // Drop descendants of another dragged slug — the ancestor carries them.
+      slugs = slugs.filter((s) => !slugs.some((o) => o !== s && s.startsWith(o + "/")));
+      dragSlugs = slugs;
+      for (const el of orderedLinks) {
+        if (dragSlugs.includes(slugOf(el))) el.classList.add("drag-source");
+      }
+      document.body.classList.add("dragging-page");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", dragSlugs.join("\\n"));
+      }
+    });
+
+    link.addEventListener("dragend", () => {
+      dragSlugs = [];
+      for (const el of orderedLinks) el.classList.remove("drag-source");
       document.body.classList.remove("dragging-page");
       clearTargets();
     });
-  }
+  });
 
   for (const target of dropTargets) {
     target.addEventListener("dragover", (event) => {
@@ -877,8 +933,13 @@ const MOVE_SCRIPT = `
 
       const isRoot = target.hasAttribute("data-drop-root");
       const targetSlug = isRoot ? "" : target.getAttribute("data-drop-slug") || "";
+      // Skip items already parented at the target — the server rejects no-ops.
+      const slugs = isRoot
+        ? dragSlugs.slice()
+        : dragSlugs.filter((s) => sourceParent(s) !== targetSlug);
+      if (slugs.length === 0) return;
       const body = new URLSearchParams({
-        sourceSlug,
+        sourceSlugs: JSON.stringify(slugs),
         targetKind: isRoot ? "root" : "page",
         targetSlug,
       });
@@ -892,6 +953,14 @@ const MOVE_SCRIPT = `
         const result = await response.json();
         if (!response.ok || !result.ok) {
           showError(result.error || "Move failed.");
+          return;
+        }
+        if (result.error) {
+          // Partial success: show the note briefly, then land on a moved page.
+          showError(result.error);
+          window.setTimeout(() => {
+            window.location.href = result.url;
+          }, 2000);
           return;
         }
         window.location.href = result.url;
@@ -1066,10 +1135,11 @@ a:hover{text-decoration:underline}
 }
 .tree ul{list-style:none; margin:0; padding:0}
 .tree .children{margin-left:12px; border-left:1px solid var(--line); padding-left:8px}
-.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px; overflow-wrap:anywhere}
+.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px; overflow-wrap:anywhere; user-select:none}
 .tree-label{color:var(--muted); font-weight:600}
 .tree a:hover{background:#eef0f3; text-decoration:none}
 .tree a.active{background:#e7efff; color:var(--accent); font-weight:600}
+.tree a.selected{background:#dbeafe; box-shadow:inset 2px 0 0 var(--accent)}
 .tree a[draggable="true"]{cursor:grab}
 .tree a.drag-source{opacity:.55}
 .tree a.drop-target-active,.root-drop.drop-target-active{

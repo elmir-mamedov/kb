@@ -184,6 +184,104 @@ test("issue #4: pages can be moved into a folder (drop pages into folders)", asy
   }
 });
 
+test("movePages: moves several pages into a folder in one pass", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Archive Box");
+    const a = await content.createPage("docs", "Note A", "# Note A\n");
+    const b = await content.createPage("docs", "Note B", "# Note B\n");
+
+    const result = await content.movePages([a.slug, b.slug], "docs/archive-box");
+    assert.equal(result.failures.length, 0);
+    assert.equal(result.moves.length, 2);
+    assert.deepEqual(
+      result.moves.map((m) => m.newSlug).sort(),
+      ["docs/archive-box/note-a", "docs/archive-box/note-b"]
+    );
+    assert.equal(
+      await pathExists(path.join(kb.dir, "docs", "archive-box", "note-a.md")),
+      true
+    );
+    assert.equal(
+      await pathExists(path.join(kb.dir, "docs", "archive-box", "note-b.md")),
+      true
+    );
+    assert.ok(result.changedFsPaths.length > 0);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("movePages: a selected parent carries its child; the child is not re-moved", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Dest");
+    const parent = await content.createFolder("docs", "Bundle");
+    const child = await content.createPage("docs/bundle", "Inner", "# Inner\n");
+
+    // Selecting both the folder and its child must move only the folder — the
+    // child is a descendant and rides along with the rename.
+    const result = await content.movePages([parent.slug, child.slug], "docs/dest");
+    assert.equal(result.moves.length, 1);
+    assert.equal(result.moves[0].newSlug, "docs/dest/bundle");
+    assert.equal(result.failures.length, 0);
+    assert.equal(
+      await pathExists(path.join(kb.dir, "docs", "dest", "bundle", "inner.md")),
+      true
+    );
+    assert.equal(await pathExists(path.join(kb.dir, "docs", "bundle")), false);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("movePages: same-named pages moved into one folder auto-suffix", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Dest");
+    await content.createFolder("docs", "A");
+    await content.createFolder("docs", "B");
+    const a = await content.createPage("docs/a", "Notes", "# A\n");
+    const b = await content.createPage("docs/b", "Notes", "# B\n");
+
+    const result = await content.movePages([a.slug, b.slug], "docs/dest");
+    assert.equal(result.moves.length, 2);
+    assert.deepEqual(
+      result.moves.map((m) => m.newSlug).sort(),
+      ["docs/dest/notes", "docs/dest/notes-2"]
+    );
+    assert.equal(await pathExists(path.join(kb.dir, "docs", "dest", "notes.md")), true);
+    assert.equal(await pathExists(path.join(kb.dir, "docs", "dest", "notes-2.md")), true);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("movePages: a bad source is reported as a failure without blocking the rest", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Dest");
+    const good = await content.createPage("docs", "Keeper", "# Keeper\n");
+
+    const result = await content.movePages([good.slug, "docs/does-not-exist"], "docs/dest");
+    assert.equal(result.moves.length, 1);
+    assert.equal(result.moves[0].newSlug, "docs/dest/keeper");
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].slug, "docs/does-not-exist");
+    assert.match(result.failures[0].error, /not found/i);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
 test("TODO #1: renameSpace edits the display name but keeps the key/URL", async () => {
   const kb: TempKb = await makeTempKb();
   try {

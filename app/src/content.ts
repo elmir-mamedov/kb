@@ -93,6 +93,15 @@ export interface MoveMutation {
   changedFsPaths: string[];
 }
 
+export interface BatchMoveMutation {
+  /** Sources that moved, in the order they were processed. */
+  moves: MoveMutation[];
+  /** Sources that could not be moved, with the reason. */
+  failures: { slug: string; error: string }[];
+  /** Union of every filesystem path touched across all moves, deduped. */
+  changedFsPaths: string[];
+}
+
 export interface RenameSpaceMutation {
   key: string;
   fsPath: string;
@@ -804,6 +813,45 @@ export class Content {
       newSlug,
       changedFsPaths: uniquePaths(changedFsPaths),
     };
+  }
+
+  /**
+   * Move several pages/sections under one new parent in a single pass. Sources
+   * are deduped and any source nested under another selected source is dropped
+   * (moving a folder already carries its children, so re-moving a child by its
+   * stale slug would fail). Each move is attempted independently: failures are
+   * collected rather than aborting the batch, and moves run sequentially so the
+   * collision auto-suffix sees earlier renames.
+   */
+  async movePages(
+    sourceSlugs: string[],
+    targetParentSlug: string | null
+  ): Promise<BatchMoveMutation> {
+    const cleaned = [...new Set(sourceSlugs.map((s) => cleanSlug(s)).filter(Boolean))];
+    // Keep only "roots": a source that is not a descendant of another source.
+    const roots = cleaned.filter(
+      (slug) => !cleaned.some((other) => other !== slug && slug.startsWith(`${other}/`))
+    );
+
+    const moves: MoveMutation[] = [];
+    const failures: { slug: string; error: string }[] = [];
+    const changedFsPaths: string[] = [];
+
+    for (const slug of roots) {
+      try {
+        const mutation = await this.movePage(slug, targetParentSlug);
+        if (!mutation) {
+          failures.push({ slug, error: "Source page not found." });
+          continue;
+        }
+        moves.push(mutation);
+        changedFsPaths.push(...mutation.changedFsPaths);
+      } catch (err) {
+        failures.push({ slug, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return { moves, failures, changedFsPaths: uniquePaths(changedFsPaths) };
   }
 
   /** Rename a page's slug leaf within its current parent; suffixes on collision. */

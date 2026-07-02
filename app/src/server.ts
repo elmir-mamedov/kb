@@ -11,6 +11,7 @@ import {
   downloadFilename,
   isFolderPage,
   type ArchiveMutation,
+  type BatchMoveMutation,
   type CreatePageMutation,
   type DeleteMutation,
   type MoveMutation,
@@ -292,6 +293,12 @@ function deleteCommitMessage(mutation: DeleteMutation): string {
 
 function moveCommitMessage(mutation: MoveMutation): string {
   return `Move ${mutation.oldSlug} to ${mutation.newSlug} via web`;
+}
+
+function moveBatchCommitMessage(moves: MoveMutation[]): string {
+  if (moves.length === 1) return moveCommitMessage(moves[0]);
+  const parent = moves[0].newSlug.split("/").slice(0, -1).join("/") || "root";
+  return `Move ${moves.length} pages to ${parent} via web`;
 }
 
 function errorMessage(err: unknown): string {
@@ -798,11 +805,27 @@ app.post("/_delete-space/*", async (req, reply) => {
 });
 
 app.post("/_move", async (req, reply) => {
-  const sourceSlug = formString(req.body, "sourceSlug") ?? "";
+  const rawSlugs = formString(req.body, "sourceSlugs");
+  const singleSlug = formString(req.body, "sourceSlug") ?? "";
   const targetKind = formString(req.body, "targetKind") ?? "";
   const targetSlug = formString(req.body, "targetSlug") ?? "";
 
-  if (!sourceSlug) {
+  // Accept either a JSON array of sources (multi-drag) or a lone sourceSlug.
+  let sourceSlugs: string[] = [];
+  if (rawSlugs) {
+    try {
+      const parsed: unknown = JSON.parse(rawSlugs);
+      if (Array.isArray(parsed)) {
+        sourceSlugs = parsed.filter((s): s is string => typeof s === "string" && s !== "");
+      }
+    } catch {
+      return reply.code(400).send({ ok: false, error: "Invalid source list." });
+    }
+  } else if (singleSlug) {
+    sourceSlugs = [singleSlug];
+  }
+
+  if (sourceSlugs.length === 0) {
     return reply.code(400).send({ ok: false, error: "Missing source page." });
   }
   if (targetKind !== "root" && targetKind !== "page") {
@@ -812,34 +835,46 @@ app.post("/_move", async (req, reply) => {
     return reply.code(400).send({ ok: false, error: "Missing destination page." });
   }
 
-  let mutation: MoveMutation | null;
+  let result: BatchMoveMutation;
   try {
-    mutation = await content.movePage(
-      sourceSlug,
+    result = await content.movePages(
+      sourceSlugs,
       targetKind === "root" ? null : targetSlug
     );
   } catch (err) {
     return reply.code(400).send({ ok: false, error: errorMessage(err) });
   }
 
-  if (!mutation) {
-    return reply.code(404).send({ ok: false, error: "Source page not found." });
+  if (result.moves.length === 0) {
+    const error = result.failures[0]?.error ?? "Source page not found.";
+    return reply.code(result.failures.length ? 400 : 404).send({ ok: false, error });
   }
 
   try {
-    await git.commitMovedPaths(mutation.changedFsPaths, moveCommitMessage(mutation));
+    await git.commitMovedPaths(result.changedFsPaths, moveBatchCommitMessage(result.moves));
   } catch (err) {
     return reply.code(500).send({
       ok: false,
       error: `Moved, but Git commit failed: ${errorMessage(err)}`,
-      url: pagePath(mutation.newSlug),
+      url: pagePath(result.moves[0].newSlug),
     });
   }
 
+  // A partial failure still reports ok (the successful moves landed); the note
+  // is surfaced to the user alongside the reload.
+  const total = result.moves.length + result.failures.length;
+  const failureNote = result.failures.length
+    ? `${result.failures.length} of ${total} could not be moved: ${result.failures
+        .map((f) => f.error)
+        .join("; ")}`
+    : undefined;
+
   return reply.send({
     ok: true,
-    slug: mutation.newSlug,
-    url: pagePath(mutation.newSlug),
+    moved: result.moves.map((m) => ({ oldSlug: m.oldSlug, newSlug: m.newSlug })),
+    slug: result.moves[0].newSlug,
+    url: pagePath(result.moves[0].newSlug),
+    ...(failureNote ? { error: failureNote } : {}),
   });
 });
 
