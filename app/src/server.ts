@@ -671,6 +671,132 @@ app.post("/_create-space", async (req, reply) => {
   return reply.redirect(`/_edit${pagePath(mutation.slug)}`, 303);
 });
 
+// --- Space management from the home grid ---------------------------------
+// The ⋯ menu on each space card posts here. All three actions land back on the
+// spaces home ("/"): the grid is where the user was, and the acted-on space has
+// either changed name, dropped off the live grid (archived), or vanished.
+
+async function renderSpacesPage(
+  reply: FastifyReply,
+  status: number,
+  extra: { notice?: ViewNotice; confirmDelete?: { key: string; title: string } } = {}
+): Promise<FastifyReply> {
+  return reply
+    .code(status)
+    .type("text/html")
+    .send(
+      spacesLayout({
+        siteTitle: SITE_TITLE,
+        spaces: await content.spaces(),
+        username: AUTH_USERNAME,
+        ...extra,
+      })
+    );
+}
+
+// Edit a space's display name in place (its key/URL is stable).
+app.post("/_rename-space", async (req, reply) => {
+  const key = formString(req.body, "key") ?? "";
+  const title = formString(req.body, "title") ?? "";
+
+  let mutation: Awaited<ReturnType<typeof content.renameSpace>>;
+  try {
+    mutation = await content.renameSpace(key, title);
+  } catch (err) {
+    return renderSpacesPage(reply, 400, {
+      notice: { tone: "error", text: errorMessage(err) },
+    });
+  }
+  if (!mutation) {
+    return renderSpacesPage(reply, 404, {
+      notice: { tone: "error", text: `No space named "${key}".` },
+    });
+  }
+
+  try {
+    // Empty changedFsPaths means the name was unchanged — skip the commit.
+    if (mutation.changedFsPaths.length) {
+      await git.commitFiles(mutation.changedFsPaths, `Rename space ${mutation.key} via web`);
+    }
+  } catch (err) {
+    return renderSpacesPage(reply, 500, {
+      notice: { tone: "error", text: `Renamed, but Git commit failed: ${errorMessage(err)}` },
+    });
+  }
+
+  return reply.redirect("/", 303);
+});
+
+// Archive a whole space: marks every page in it archived (reusing the page
+// archive path) so it drops off the live grid but stays restorable.
+app.post("/_archive-space", async (req, reply) => {
+  const key = formString(req.body, "key") ?? "";
+  if (!key || key.includes("/")) {
+    return renderSpacesPage(reply, 400, {
+      notice: { tone: "error", text: "Only a top-level space can be archived here." },
+    });
+  }
+
+  let mutation: ArchiveMutation | null;
+  try {
+    mutation = await content.updateArchive(key, true);
+  } catch (err) {
+    return renderSpacesPage(reply, 400, {
+      notice: { tone: "error", text: errorMessage(err) },
+    });
+  }
+  if (!mutation) {
+    return renderSpacesPage(reply, 404, {
+      notice: { tone: "error", text: `No space named "${key}".` },
+    });
+  }
+
+  try {
+    await git.commitFiles(mutation.changedFsPaths, archiveCommitMessage("Archive", mutation));
+  } catch (err) {
+    return renderSpacesPage(reply, 500, {
+      notice: { tone: "error", text: `Archived, but Git commit failed: ${errorMessage(err)}` },
+    });
+  }
+
+  return reply.redirect("/", 303);
+});
+
+// Deleting a whole space is irreversible (its git repo goes with it), so the
+// menu's Delete link lands here first for a confirmation prompt.
+app.get("/_delete-space/*", async (req, reply) => {
+  const key = content.spaceKeyOf((req.params as { "*": string })["*"] ?? "");
+  const space = (await content.spaces("all")).find((s) => s.key === key);
+  if (!space) {
+    return renderSpacesPage(reply, 404, {
+      notice: { tone: "error", text: `No space named "${key}".` },
+    });
+  }
+  return renderSpacesPage(reply, 200, {
+    confirmDelete: { key: space.key, title: space.title },
+  });
+});
+
+app.post("/_delete-space/*", async (req, reply) => {
+  const key = (req.params as { "*": string })["*"] ?? "";
+
+  let mutation: Awaited<ReturnType<typeof content.deleteSpace>>;
+  try {
+    mutation = await content.deleteSpace(key);
+  } catch (err) {
+    return renderSpacesPage(reply, 400, {
+      notice: { tone: "error", text: errorMessage(err) },
+    });
+  }
+  if (!mutation) {
+    return renderSpacesPage(reply, 404, {
+      notice: { tone: "error", text: `No space named "${key}".` },
+    });
+  }
+
+  return reply.redirect("/", 303);
+});
+
 app.post("/_move", async (req, reply) => {
   const sourceSlug = formString(req.body, "sourceSlug") ?? "";
   const targetKind = formString(req.body, "targetKind") ?? "";

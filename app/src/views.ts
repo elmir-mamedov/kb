@@ -166,6 +166,8 @@ export interface SpacesView {
   spaces: SpaceInfo[];
   notice?: ViewNotice;
   username?: string | null;
+  /** When set, show a delete-space confirmation for this space above the grid. */
+  confirmDelete?: { key: string; title: string };
 }
 
 export interface LoginView {
@@ -617,6 +619,16 @@ export function spacesLayout(v: SpacesView): string {
   const notice = v.notice
     ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
     : "";
+  const confirm = v.confirmDelete
+    ? `<div class="notice error space-confirm">
+    <strong>Delete the “${escapeHtml(v.confirmDelete.title)}” space?</strong>
+    This permanently removes the space, every page inside it, and its Git history. This cannot be undone.
+    <form class="confirm-actions" method="post" action="/_delete-space${slugPath(v.confirmDelete.key)}">
+      <button class="button danger" type="submit">Delete space</button>
+      <a class="button secondary" href="/">Cancel</a>
+    </form>
+  </div>`
+    : "";
   const cards = v.spaces.length
     ? v.spaces
         .map((s) => {
@@ -626,11 +638,16 @@ export function spacesLayout(v: SpacesView): string {
           const summary = s.summary
             ? `<p class="space-summary">${escapeHtml(s.summary)}</p>`
             : "";
-          return `<a class="space-card" href="${slugPath(s.key)}">
-    ${icon}
-    <span class="space-card-title">${escapeHtml(s.title)}</span>
-    ${summary}
-  </a>`;
+          // The card link cannot contain the interactive ⋯ menu (no nested
+          // forms/anchors), so wrap both and float the menu into the corner.
+          return `<div class="space-card-wrap">
+    <a class="space-card" href="${slugPath(s.key)}">
+      ${icon}
+      <span class="space-card-title">${escapeHtml(s.title)}</span>
+      ${summary}
+    </a>
+    ${spaceMenu(s)}
+  </div>`;
         })
         .join("")
     : `<p class="empty">No spaces yet — create your first one below.</p>`;
@@ -653,15 +670,40 @@ ${sessionCorner(v.username)}
       <a class="button secondary" href="/_archive">Archive</a>
     </div>
   </header>
-  ${notice}
+  ${notice}${confirm}
   <section class="spaces-grid">${cards}</section>
   <form class="new-space-form" method="post" action="/_create-space">
     <input type="text" name="title" placeholder="New space name" aria-label="New space name" maxlength="80" required />
     <button class="button primary" type="submit">New Space</button>
   </form>
 </main>
+<script>${SPACE_MENU_SCRIPT}</script>
 </body>
 </html>`;
+}
+
+/**
+ * Per-space ⋯ menu on the home grid: edit the space's display name (an inline
+ * rename, the space's key/URL stays put), archive the whole space, or delete it
+ * outright. Mirrors the sidebar page menu, but scoped to space-level actions.
+ */
+function spaceMenu(space: SpaceInfo): string {
+  const key = space.key;
+  return `<details class="space-menu">
+    <summary aria-label="Space actions">⋯</summary>
+    <div class="space-menu-pop">
+      <form class="menu-name-form" method="post" action="/_rename-space">
+        <input type="hidden" name="key" value="${escapeHtml(key)}" />
+        <input type="text" name="title" value="${escapeHtml(space.title)}" aria-label="Space name" required />
+        <button type="submit">Rename</button>
+      </form>
+      <form method="post" action="/_archive-space">
+        <input type="hidden" name="key" value="${escapeHtml(key)}" />
+        <button type="submit">Archive</button>
+      </form>
+      <a href="/_delete-space${slugPath(key)}">Delete</a>
+    </div>
+  </details>`;
 }
 
 /**
@@ -910,6 +952,30 @@ const MOVE_SCRIPT = `
       saveCollapsed(collapsed);
     });
   }
+})();
+`;
+
+/**
+ * Space ⋯ menus on the home grid: keep only one open, and close the open one
+ * when the user clicks elsewhere. The <details> toggle works without JS; this
+ * just adds the same dismiss behavior the sidebar page menus have.
+ */
+const SPACE_MENU_SCRIPT = `
+(() => {
+  const menus = Array.from(document.querySelectorAll(".space-menu"));
+  for (const menu of menus) {
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      for (const other of menus) {
+        if (other !== menu) other.open = false;
+      }
+    });
+  }
+  document.addEventListener("click", (event) => {
+    for (const menu of menus) {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    }
+  });
 })();
 `;
 
@@ -1191,8 +1257,9 @@ a:hover{text-decoration:underline}
 .spaces-head{display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:28px}
 .spaces-head h1{font-size:28px; line-height:1.2; margin:0}
 .spaces-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px}
+.space-card-wrap{position:relative; display:flex}
 .space-card{
-  display:flex; flex-direction:column; gap:6px; padding:18px 18px 20px;
+  flex:1; display:flex; flex-direction:column; gap:6px; padding:18px 18px 20px;
   border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--fg);
 }
 .space-card:hover{text-decoration:none; border-color:#93c5fd; box-shadow:0 1px 4px rgba(0,0,0,.06)}
@@ -1200,6 +1267,41 @@ a:hover{text-decoration:underline}
 .space-card-title{font-weight:700; font-size:16px}
 .space-summary{margin:0; color:var(--muted); font-size:13px; line-height:1.5}
 .spaces-grid .empty{color:var(--muted)}
+/* Per-space ⋯ menu, floated into the card's top-right corner. */
+.space-menu{position:absolute; top:10px; right:10px}
+.space-menu>summary{
+  list-style:none; cursor:pointer; user-select:none;
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border-radius:6px; opacity:0; transition:opacity .1s ease;
+  border:1px solid var(--line); background:#fff; color:var(--muted); font-size:16px; line-height:1;
+}
+.space-menu>summary::-webkit-details-marker{display:none}
+.space-menu>summary::marker{content:""}
+.space-card-wrap:hover .space-menu>summary,.space-menu[open]>summary{opacity:1}
+.space-menu>summary:hover{background:#f7f8fa; color:var(--fg)}
+.space-menu-pop{
+  position:absolute; right:0; top:32px; z-index:10; min-width:190px;
+  background:#fff; border:1px solid var(--line); border-radius:6px;
+  box-shadow:0 2px 8px rgba(0,0,0,.12); padding:6px; display:flex; flex-direction:column; gap:4px;
+}
+.space-menu-pop form{margin:0}
+.space-menu-pop>form:not(.menu-name-form)>button,.space-menu-pop>a{
+  display:block; width:100%; text-align:left; border:0; background:transparent;
+  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  cursor:pointer; font-family:inherit;
+}
+.space-menu-pop>form:not(.menu-name-form)>button:hover,.space-menu-pop>a:hover{
+  background:#eef0f3; text-decoration:none;
+}
+.space-menu-pop>a{color:#991b1b}
+.space-menu-pop .menu-name-form{flex-direction:row; align-items:center; gap:4px}
+.space-menu-pop .menu-name-form input[type=text]{flex:1; min-width:0}
+.space-menu-pop .menu-name-form button{
+  flex:0 0 auto; border:1px solid var(--line); border-radius:4px; background:#fff;
+  padding:5px 8px; color:#374151; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;
+}
+.space-menu-pop .menu-name-form button:hover{background:#f7f8fa}
+.space-confirm .confirm-actions{margin-top:12px}
 .new-space-form{display:flex; gap:8px; margin-top:28px}
 .new-space-form input{
   flex:1; max-width:360px; border:1px solid var(--line); border-radius:6px; padding:8px 10px;

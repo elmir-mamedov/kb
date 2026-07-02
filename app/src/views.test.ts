@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { layout, folderLayout, type PageView, type FolderView } from "./views.js";
+import {
+  layout,
+  folderLayout,
+  spacesLayout,
+  type PageView,
+  type FolderView,
+  type SpacesView,
+} from "./views.js";
 import type { PageNode } from "./content.js";
 
 /** A leaf-page tree node fixture (fills in the required flags). */
@@ -162,4 +169,46 @@ test("folderLayout lists children and offers create/rename, but no Edit/Download
 test("folderLayout shows an empty-state when the folder has no items", () => {
   const html = folderLayout(folderView({ children: [] }));
   assert.match(html, /This folder is empty/);
+});
+
+function spacesView(overrides: Partial<SpacesView> = {}): SpacesView {
+  return {
+    siteTitle: "KB",
+    spaces: [
+      { key: "flux", title: "Flux", summary: "Notes", icon: "📘", archived: false },
+    ],
+    username: "alice",
+    ...overrides,
+  };
+}
+
+test("TODO #1: each space card carries a ⋯ menu with Rename, Archive, Delete", () => {
+  const html = spacesLayout(spacesView());
+  // The card link and the menu are siblings (the menu can't nest in the <a>).
+  assert.match(html, /class="space-card-wrap"/);
+  assert.match(html, /<summary aria-label="Space actions">⋯<\/summary>/);
+  // Edit the name in place — inline rename posting the space key + new title.
+  assert.match(
+    html,
+    /action="\/_rename-space">[\s\S]*?name="key"[^>]*value="flux"[\s\S]*?name="title"[^>]*value="Flux"/
+  );
+  // Archive the whole space.
+  assert.match(
+    html,
+    /action="\/_archive-space">[\s\S]*?value="flux"[\s\S]*?<button type="submit">Archive<\/button>/
+  );
+  // Delete goes through a confirmation route.
+  assert.match(html, /href="\/_delete-space\/flux">Delete<\/a>/);
+});
+
+test("TODO #1: confirmDelete renders a scary confirmation posting to _delete-space", () => {
+  const html = spacesLayout(spacesView({ confirmDelete: { key: "flux", title: "Flux" } }));
+  assert.match(html, /Delete the “Flux” space\?/);
+  assert.match(html, /its Git history/);
+  assert.match(
+    html,
+    /action="\/_delete-space\/flux">[\s\S]*?<button class="button danger" type="submit">Delete space<\/button>/
+  );
+  // Cancel bails back to the grid.
+  assert.match(html, /href="\/">Cancel<\/a>/);
 });

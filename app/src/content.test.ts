@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Content, downloadFilename } from "./content.js";
+import { makeGit } from "./git.js";
 import { makeTempKb, pathExists, type TempKb } from "./test-helpers.js";
 
 test("issue #3: downloadFilename uses the slug leaf plus .md", () => {
@@ -178,6 +179,67 @@ test("issue #4: pages can be moved into a folder (drop pages into folders)", asy
       await pathExists(path.join(kb.dir, "docs", "archive-box", "loose-note.md")),
       true
     );
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("TODO #1: renameSpace edits the display name but keeps the key/URL", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    const space = await content.createSpace("Docs");
+    assert.equal(space.slug, "docs");
+
+    const renamed = await content.renameSpace("docs", "Documentation");
+    assert.ok(renamed);
+    assert.equal(renamed!.key, "docs", "the space key/URL must not change on rename");
+    assert.deepEqual(renamed!.changedFsPaths, [space.fsPath]);
+
+    const raw = await fs.readFile(space.fsPath, "utf8");
+    assert.match(raw, /title: Documentation/);
+    // Still resolvable at the same key, now with the new display name.
+    const spaces = await content.spaces();
+    assert.equal(spaces.find((s) => s.key === "docs")!.title, "Documentation");
+
+    // Renaming to the same name is a no-op (no spurious commit).
+    const noop = await content.renameSpace("docs", "Documentation");
+    assert.deepEqual(noop!.changedFsPaths, []);
+
+    // Guards: empty name, nested slugs, and unknown spaces.
+    await assert.rejects(() => content.renameSpace("docs", "   "), /name is required/);
+    await assert.rejects(() => content.renameSpace("docs/child", "X"), /top-level space/);
+    assert.equal(await content.renameSpace("ghost", "X"), null);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("TODO #1: deleteSpace removes the whole space directory, git repo included", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await content.createSpace("Docs");
+    await content.createPage("docs", "Note", "# Note\n");
+    // Give it a real per-space git repo, like the running app does.
+    const g = makeGit(kb.dir);
+    await g.initSpaceRepo("docs");
+    const dir = path.join(kb.dir, "docs");
+    assert.equal(await pathExists(path.join(dir, ".git")), true);
+
+    const mutation = await content.deleteSpace("docs");
+    assert.ok(mutation);
+    assert.equal(mutation!.key, "docs");
+    assert.equal(mutation!.title, "Docs");
+    assert.equal(mutation!.dir, dir);
+    // The entire directory is gone — no orphaned .git / _assets left behind.
+    assert.equal(await pathExists(dir), false);
+    assert.deepEqual(await content.spaces(), []);
+
+    // Guards: nested slugs / underscore helpers are rejected; unknown → null.
+    await assert.rejects(() => content.deleteSpace("a/b"), /top-level space/);
+    await assert.rejects(() => content.deleteSpace("_assets"), /top-level space/);
+    assert.equal(await content.deleteSpace("ghost"), null);
   } finally {
     await kb.cleanup();
   }

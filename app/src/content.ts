@@ -93,6 +93,20 @@ export interface MoveMutation {
   changedFsPaths: string[];
 }
 
+export interface RenameSpaceMutation {
+  key: string;
+  fsPath: string;
+  /** The space's index.md when its title changed; empty when the name was unchanged. */
+  changedFsPaths: string[];
+}
+
+export interface DeleteSpaceMutation {
+  key: string;
+  title: string;
+  /** Absolute path of the removed space directory (its whole per-space repo). */
+  dir: string;
+}
+
 /**
  * The content layer. Everything reads from a single folder of markdown files —
  * the same folder the MCP server will write to in a later step.
@@ -580,6 +594,92 @@ export class Content {
     await fs.writeFile(gitignorePath, SPACE_GITIGNORE, { encoding: "utf8", flag: "wx" });
 
     return { slug: key, fsPath, changedFsPaths: [fsPath, gitkeepPath, gitignorePath] };
+  }
+
+  /**
+   * Rename a space's display name (rewrites only its index.md `title`). Like
+   * renameFolder, the space's key/URL is deliberately stable — the on-disk
+   * folder is its own git repo, so its name is its identity. Returns an empty
+   * `changedFsPaths` when the name is unchanged so the caller skips a spurious
+   * commit; returns null when the key is not a space with an index.md.
+   */
+  async renameSpace(key: string, title: string): Promise<RenameSpaceMutation | null> {
+    const clean = cleanSlug(key);
+    if (!clean || clean.includes("/")) {
+      throw new Error("Only a top-level space can be renamed this way.");
+    }
+
+    const fsPath = await this.resolve(clean);
+    // A space is a top-level folder backed by index.md; anything else is not one.
+    if (!fsPath || !this.isSectionFsPath(fsPath) || path.dirname(fsPath) !== path.join(this.root, clean)) {
+      return null;
+    }
+
+    const trimmed = title.trim();
+    if (!trimmed) {
+      throw new Error("The space name is required.");
+    }
+
+    const raw = await fs.readFile(fsPath, "utf8");
+    const { data } = parsePage(raw, fsPath);
+    if (data.title === trimmed) {
+      return { key: clean, fsPath, changedFsPaths: [] };
+    }
+
+    const parsed = matter(raw);
+    const nextData = { ...parsed.data, title: trimmed } as Record<string, unknown>;
+    const nextRaw = matter.stringify(parsed.content, nextData);
+    parsePage(nextRaw, fsPath);
+
+    await fs.writeFile(fsPath, nextRaw, "utf8");
+    return { key: clean, fsPath, changedFsPaths: [fsPath] };
+  }
+
+  /**
+   * Permanently delete an entire space: its whole top-level directory, including
+   * the space's own git repo and `_assets`. The KB root itself is not versioned,
+   * so there is nothing to commit — the caller just removes and redirects.
+   * Returns null when the key does not name an existing space directory.
+   */
+  async deleteSpace(key: string): Promise<DeleteSpaceMutation | null> {
+    const clean = cleanSlug(key);
+    if (!clean || clean.includes("/") || clean.startsWith(".") || clean.startsWith("_")) {
+      throw new Error("Only a top-level space can be deleted this way.");
+    }
+
+    const dir = path.join(this.root, clean);
+    // A space is always a direct child of the KB root; reject any traversal.
+    if (path.dirname(dir) !== this.root) {
+      throw new Error("Only a top-level space can be deleted this way.");
+    }
+
+    let stat: import("node:fs").Stats;
+    try {
+      stat = await fs.stat(dir);
+    } catch {
+      return null;
+    }
+    if (!stat.isDirectory()) return null;
+
+    // Capture the display name before removing, for the caller's messaging.
+    let title = clean;
+    try {
+      const raw = await fs.readFile(path.join(dir, "index.md"), "utf8");
+      title = parsePage(raw, dir).data.title;
+    } catch {
+      /* no/invalid index.md — fall back to the key */
+    }
+
+    await fs.rm(dir, { recursive: true, force: true });
+
+    // Drop cached parses beneath the removed dir so the tree reflects the delete.
+    for (const cached of this.parseCache.keys()) {
+      if (cached === dir || cached.startsWith(dir + path.sep)) {
+        this.parseCache.delete(cached);
+      }
+    }
+
+    return { key: clean, title, dir };
   }
 
   /** Return deletion impact without mutating the filesystem. */
