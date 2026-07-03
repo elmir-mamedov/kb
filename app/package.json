@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "mcp": "tsx src/mcp.ts",
+    "harvest": "tsx src/harvest/harvest.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test 'src/**/*.test.ts'"
