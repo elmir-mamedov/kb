@@ -1,0 +1,11 @@
+{
+  "name": "flux",
+  "displayName": "Flux KB",
+  "description": "Knowledge-base authoring skills plus the flux-kb MCP server (read/write access to the Markdown knowledge base).",
+  "version": "0.1.0",
+  "author": {
+    "name": "Elmir Mamedov"
+  },
+  "keywords": ["knowledge-base", "markdown", "kb", "authoring"],
+  "mcpServers": "./.mcp.json"
+}

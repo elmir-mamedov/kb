@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "flux-kb": {
+      "command": "npm",
+      "args": ["--prefix", "/Users/elmir.mamedov/dev/flux/app", "run", "mcp"],
+      "env": {
+        "KB_DIR": "/Users/elmir.mamedov/dev/flux/kb"
+      }
+    }
+  }
+}
