@@ -255,6 +255,18 @@ for (const file of PUBLIC_FILES) {
   app.get(`/${file}`, async (_req, reply) => reply.sendFile(file, PUBLIC_DIR));
 }
 
+// Mermaid's browser bundle, served straight from node_modules so diagram pages
+// can render client-side while the viewer stays fully self-contained/offline.
+// Loaded from an already-authenticated page, so it passes the onRequest gate.
+const MERMAID_DIST = path.join(__dirname, "..", "node_modules", "mermaid", "dist");
+app.get("/_vendor/mermaid/*", async (req, reply) => {
+  const rel = (req.params as { "*": string })["*"];
+  if (!isInsideDir(MERMAID_DIST, path.join(MERMAID_DIST, rel))) {
+    return reply.callNotFound();
+  }
+  return reply.sendFile(rel, MERMAID_DIST);
+});
+
 /** Best-effort git commit date+time for a file; falls back to null. */
 async function gitUpdated(fsPath: string): Promise<string | null> {
   try {
@@ -342,9 +354,10 @@ async function renderPage(
   slug: string,
   options: { notice?: ViewNotice } = {}
 ): Promise<{ status: number; html: string }> {
-  const [spaces, titles, page] = await Promise.all([
+  const [spaces, titles, ids, page] = await Promise.all([
     content.spaces(),
     content.titleIndex(),
+    content.idIndex(),
     content.load(slug),
   ]);
 
@@ -378,7 +391,7 @@ async function renderPage(
     return { status: 200, html };
   }
 
-  const md = createRenderer((s) => titles.get(s), page.slug);
+  const md = createRenderer((s) => titles.get(s), page.slug, (id) => ids.get(id));
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
 

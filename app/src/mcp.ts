@@ -25,6 +25,8 @@ const git = makeGit(KB_DIR);
 
 interface ListedPage {
   slug: string;
+  /** Stable page id; use it in `[[id:<id>]]` links so they survive moves. */
+  id?: string;
   title: string;
   path: string;
   isSection: boolean;
@@ -37,6 +39,8 @@ interface ListedPage {
 
 interface SearchMatch {
   slug: string;
+  /** Stable page id; use it in `[[id:<id>]]` links so they survive moves. */
+  id?: string;
   title: string;
   path: string;
   archived: boolean;
@@ -84,6 +88,7 @@ function pageUri(slug: string): string {
 function listedPage(node: PageNode): ListedPage {
   return {
     slug: node.slug,
+    id: node.id,
     title: node.title,
     path: kbRelPath(node.fsPath),
     isSection: node.isSection,
@@ -235,6 +240,7 @@ async function searchPages(
 
     matches.push({
       slug: page.slug,
+      id: page.data.id,
       title: page.data.title,
       path: kbRelPath(page.fsPath),
       archived: page.data.archived === true,
@@ -259,7 +265,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages (each listed page reports isFolder); pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages (each listed page reports isFolder); pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`. LINKING: every page has a stable `id` (returned by kb_get_page, kb_list_pages, kb_search, and the create tools). To link to another page from Markdown, prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
   }
 );
 
@@ -317,7 +323,8 @@ server.registerTool(
   "kb_get_page",
   {
     title: "Get KB Page",
-    description: "Read a page by slug as parsed Markdown or raw source.",
+    description:
+      "Read a page by slug as parsed Markdown or raw source. The result includes the page's stable `id` — use it to link here with `[[id:<id>]]` so the link survives future moves.",
     inputSchema: {
       slug: z
         .string()
@@ -356,6 +363,7 @@ server.registerTool(
       const node = flatten(tree).find((n) => n.slug === page.slug);
       return textResult({
         slug: page.slug,
+        id: page.data.id,
         title: page.data.title,
         isFolder: true,
         frontmatter: page.data,
@@ -366,6 +374,7 @@ server.registerTool(
 
     return textResult({
       slug: page.slug,
+      id: page.data.id,
       title: page.data.title,
       isFolder: false,
       frontmatter: page.data,
@@ -441,6 +450,7 @@ server.registerTool(
       return textResult({
         created: true,
         slug: mutation.slug,
+        id: mutation.id,
         path: git.kbRelPath(mutation.fsPath),
         commit,
       });
@@ -477,6 +487,7 @@ server.registerTool(
       return textResult({
         created: true,
         slug: mutation.slug,
+        id: mutation.id,
         path: git.kbRelPath(mutation.fsPath),
         commit,
       });
@@ -740,7 +751,7 @@ server.registerTool(
         mutation.changedFsPaths ?? [mutation.fsPath],
         `Create ${git.kbRelPath(mutation.fsPath)} via mcp`
       );
-      return textResult({ created: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+      return textResult({ created: true, slug: mutation.slug, id: mutation.id, path: git.kbRelPath(mutation.fsPath), commit });
     } catch (err) {
       return errorResult(errorMessage(err));
     }

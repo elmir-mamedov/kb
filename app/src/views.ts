@@ -344,6 +344,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchi
 </main>
 <script>${EDIT_SHORTCUT_SCRIPT}</script>
 ${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
+${v.contentHtml.includes('class="mermaid"') ? MERMAID_SCRIPT : ""}
 </body>
 </html>`;
 }
@@ -774,6 +775,19 @@ const EDIT_SHORTCUT_SCRIPT = `
 })();
 `;
 
+/**
+ * Loads Mermaid from the app's own bundle and renders every `<pre class="mermaid">`
+ * container into an SVG diagram. Injected only on pages that contain one (see
+ * `layout`). `securityLevel: "strict"` keeps Mermaid's DOMPurify sanitizer on,
+ * matching the viewer's no-raw-HTML posture. The `<script>` sits at the end of
+ * <body>, so all diagram containers are already in the DOM when `run()` fires.
+ */
+const MERMAID_SCRIPT = `<script src="/_vendor/mermaid/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" });
+  mermaid.run();
+</script>`;
+
 /** Cmd/Ctrl+S submits the open editor form instead of the browser save dialog. */
 const EDITOR_SCRIPT = `
 (() => {
@@ -1052,7 +1066,7 @@ const STYLES = `
 :root{
   --bg:#fff; --fg:#1f2328; --muted:#6b7280; --line:#e5e7eb;
   --accent:#2563eb; --sidebar:#f7f8fa; --code-bg:#f6f8fa;
-  --maxw:760px;
+  --maxw:1216px;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -1257,6 +1271,8 @@ a:hover{text-decoration:underline}
 .prose pre{background:var(--code-bg); padding:14px 16px; border-radius:8px;
   overflow:auto; border:1px solid var(--line)}
 .prose pre code{background:none; padding:0}
+.prose pre.mermaid{background:none; border:none; padding:0; text-align:center; overflow:auto}
+.prose pre.mermaid:not([data-processed]){visibility:hidden}
 .prose blockquote{margin:1em 0; padding:.4em 1em; color:var(--muted);
   border-left:3px solid var(--line)}
 .prose table{border-collapse:collapse; width:100%}

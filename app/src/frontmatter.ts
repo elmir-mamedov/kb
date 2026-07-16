@@ -8,6 +8,13 @@ import { z } from "zod";
  */
 export const FrontmatterSchema = z.object({
   title: z.string().min(1, "title is required"),
+  /**
+   * Stable, immutable page identity. Unlike the slug (which is the file path and
+   * changes on move/rename), the id never changes, so an `[[id:<id>]]` link keeps
+   * resolving after a page is moved. Optional so pages predating the id backfill
+   * still validate; new pages get one on create and the migration adds it to the rest.
+   */
+  id: z.string().optional(),
   tags: z.array(z.string()).optional(),
   summary: z.string().optional(),
   /** Optional emoji shown on the space card; only meaningful on a space's index.md. */

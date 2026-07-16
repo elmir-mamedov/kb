@@ -77,10 +77,14 @@ function rewriteAttr(md: MarkdownIt, rule: string, attr: string, spaceKey: strin
  *                     title is also treated as an existing page.
  * @param currentSlug  the slug of the page being rendered, used to resolve
  *                     relative [[wiki-link]] targets within the same space.
+ * @param resolveIdSlug maps a stable page id to its current slug, so an
+ *                     `[[id:<id>]]` link resolves to the page's live location
+ *                     even after it has been moved or renamed.
  */
 export function createRenderer(
   resolveTitle: (slug: string) => string | undefined,
-  currentSlug = ""
+  currentSlug = "",
+  resolveIdSlug: (id: string) => string | undefined = () => undefined
 ): MarkdownIt {
   const md = new MarkdownIt({
     html: false, // don't allow raw HTML from content for safety
@@ -97,6 +101,22 @@ export function createRenderer(
       return ""; // markdown-it will escape & wrap in <pre><code>
     },
   });
+
+  // ```mermaid fences become a container the client-side Mermaid library finds
+  // and replaces with an SVG diagram, instead of a highlighted code block. The
+  // default fence renderer (which drives the `highlight` callback above) still
+  // handles every other language, so normal code blocks are unaffected.
+  const defaultFence = md.renderer.rules.fence!;
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const lang = token.info.trim().split(/\s+/)[0];
+    if (lang === "mermaid") {
+      // Mermaid reads the element's textContent, so escape for valid HTML; the
+      // browser decodes it back to the raw diagram source before Mermaid runs.
+      return `<pre class="mermaid">${md.utils.escapeHtml(token.content)}</pre>\n`;
+    }
+    return defaultFence(tokens, idx, options, env, self);
+  };
 
   // Rewrite relative `_assets/…` references (images and attachment links such
   // as PDFs) to the current page's space, e.g. `_assets/diagram.png` on a `flux`
@@ -120,23 +140,44 @@ export function createRenderer(
     if (!silent) {
       const inner = state.src.slice(start + 2, end);
       const [rawTarget, rawLabel] = inner.split("|");
-      const slug = resolveWikiTarget(
-        rawTarget || "",
-        currentSlug,
-        (s) => resolveTitle(s) !== undefined
-      );
-      const text =
-        (rawLabel && rawLabel.trim()) ||
-        resolveTitle(slug) ||
-        slug.split("/").pop() ||
-        slug;
+      const label = rawLabel?.trim();
+      const target = (rawTarget || "").trim();
+      const idMatch = /^id:(.+)$/.exec(target);
 
-      const open = state.push("link_open", "a", 1);
-      open.attrSet("href", "/" + slug);
-      open.attrSet("class", "wikilink");
-      const t = state.push("text", "", 0);
-      t.content = text;
-      state.push("link_close", "a", -1);
+      if (idMatch) {
+        // `[[id:<id>]]` / `[[id:<id>|Label]]` — resolve the stable id to the
+        // page's current slug so the link survives moves/renames. An unknown id
+        // renders a visibly-broken, non-crashing link rather than throwing.
+        const id = idMatch[1].trim();
+        const slug = resolveIdSlug(id);
+        const open = state.push("link_open", "a", 1);
+        if (slug !== undefined) {
+          open.attrSet("href", "/" + slug);
+          open.attrSet("class", "wikilink");
+          const t = state.push("text", "", 0);
+          t.content = label || resolveTitle(slug) || slug.split("/").pop() || slug;
+        } else {
+          open.attrSet("href", "/id:" + id);
+          open.attrSet("class", "wikilink broken");
+          const t = state.push("text", "", 0);
+          t.content = label || id;
+        }
+        state.push("link_close", "a", -1);
+      } else {
+        const slug = resolveWikiTarget(
+          rawTarget || "",
+          currentSlug,
+          (s) => resolveTitle(s) !== undefined
+        );
+        const text = label || resolveTitle(slug) || slug.split("/").pop() || slug;
+
+        const open = state.push("link_open", "a", 1);
+        open.attrSet("href", "/" + slug);
+        open.attrSet("class", "wikilink");
+        const t = state.push("text", "", 0);
+        t.content = text;
+        state.push("link_close", "a", -1);
+      }
     }
 
     state.pos = end + 2;

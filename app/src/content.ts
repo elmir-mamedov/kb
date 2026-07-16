@@ -1,13 +1,20 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import matter from "gray-matter";
 import { parsePage, type Frontmatter } from "./frontmatter.js";
+import { resolveWikiTarget } from "./markdown.js";
 
 export type TreeFilter = "live" | "archived" | "all";
 
 export interface PageNode {
   /** URL path with no leading slash, e.g. "engineering/runbooks/deploy". */
   slug: string;
+  /**
+   * Stable page id from frontmatter, used to resolve move-proof `[[id:<id>]]`
+   * links. Undefined for pages that predate the id backfill.
+   */
+  id?: string;
   title: string;
   /** Absolute path to the backing .md file (index.md for sections). */
   fsPath: string;
@@ -63,6 +70,8 @@ export interface ArchiveMutation {
 
 export interface CreatePageMutation {
   slug: string;
+  /** The stable page id written into the new page's frontmatter. */
+  id: string;
   fsPath: string;
   /** When a leaf parent was promoted to a section, the paths the commit must cover. */
   changedFsPaths?: string[];
@@ -213,6 +222,7 @@ export class Content {
         const indexPath = path.join(dirPath, "index.md");
         const slug = baseSlug ? `${baseSlug}/${name}` : name;
         let title = name;
+        let id: string | undefined;
         let backing = dirPath;
         let archived = false;
         let archivedAt: string | undefined;
@@ -222,6 +232,7 @@ export class Content {
           const parsed = await this.readParsed(indexPath);
           if (parsed) {
             title = parsed.data.title;
+            id = parsed.data.id;
             archived = parsed.data.archived === true;
             archivedAt = parsed.data.archivedAt;
             backing = indexPath;
@@ -241,6 +252,7 @@ export class Content {
         if (this.includeNode(filter, archived, children.length)) {
           nodes.push({
             slug,
+            id,
             title,
             fsPath: backing,
             isSection: true,
@@ -256,6 +268,7 @@ export class Content {
         const slug = baseSlug ? `${baseSlug}/${base}` : base;
         const fsPath = path.join(dir, name);
         let title = base;
+        let id: string | undefined;
         let archived = false;
         let archivedAt: string | undefined;
         let ownMtime: number | undefined;
@@ -263,6 +276,7 @@ export class Content {
           const parsed = await this.readParsed(fsPath);
           if (parsed) {
             title = parsed.data.title;
+            id = parsed.data.id;
             archived = parsed.data.archived === true;
             archivedAt = parsed.data.archivedAt;
             ownMtime = parsed.mtimeMs;
@@ -272,7 +286,7 @@ export class Content {
         }
         const modifiedMs = ownMtime ?? (await mtimeMs(fsPath));
         if (this.includeNode(filter, archived, 0)) {
-          nodes.push({ slug, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, children: [] });
+          nodes.push({ slug, id, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, children: [] });
         }
       }
     }
@@ -417,14 +431,15 @@ export class Content {
     const { name, title } = await this.nextUntitledName(parentDir, "page");
     const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
     const fsPath = path.join(parentDir, `${name}.md`);
-    const raw = matter.stringify(`# ${title}\n\n`, { title });
+    const id = newPageId();
+    const raw = matter.stringify(`# ${title}\n\n`, { title, id });
 
     parsePage(raw, fsPath);
     if (promotion) await this.applyPromotion(promotion);
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
     return promotion
-      ? { slug, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
-      : { slug, fsPath };
+      ? { slug, id, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
+      : { slug, id, fsPath };
   }
 
   /** Create a finished page from a title and body inside a space/section (or root when parent is ""). */
@@ -466,7 +481,8 @@ export class Content {
     const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
     const fsPath = path.join(parentDir, `${name}.md`);
 
-    const data: Record<string, unknown> = { title: trimmedTitle };
+    const id = newPageId();
+    const data: Record<string, unknown> = { title: trimmedTitle, id };
     if (opts.tags && opts.tags.length > 0) data.tags = opts.tags;
     if (opts.summary) data.summary = opts.summary;
     const content = body.trim() ? `${body.trim()}\n` : `# ${trimmedTitle}\n\n`;
@@ -476,8 +492,8 @@ export class Content {
     if (promotion) await this.applyPromotion(promotion);
     await fs.writeFile(fsPath, raw, { encoding: "utf8", flag: "wx" });
     return promotion
-      ? { slug, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
-      : { slug, fsPath };
+      ? { slug, id, fsPath, changedFsPaths: [promotion.from, promotion.to, fsPath] }
+      : { slug, id, fsPath };
   }
 
   /**
@@ -517,9 +533,11 @@ export class Content {
 
     const folderDir = path.join(parentDir, folderName);
     const indexPath = path.join(folderDir, "index.md");
-    // A folder is a pure container: its index.md carries only the display name
-    // and the `type: folder` marker, with no body to edit.
-    const raw = matter.stringify("", { title: folderTitle, type: "folder" });
+    // A folder is a pure container: its index.md carries only the display name,
+    // a stable id (so it stays linkable/move-proof), and the `type: folder`
+    // marker, with no body to edit.
+    const id = newPageId();
+    const raw = matter.stringify("", { title: folderTitle, id, type: "folder" });
     parsePage(raw, indexPath);
 
     if (promotion) await this.applyPromotion(promotion);
@@ -528,8 +546,8 @@ export class Content {
 
     const slug = `${cleanParent}/${folderName}`;
     return promotion
-      ? { slug, fsPath: indexPath, changedFsPaths: [promotion.from, promotion.to, indexPath] }
-      : { slug, fsPath: indexPath };
+      ? { slug, id, fsPath: indexPath, changedFsPaths: [promotion.from, promotion.to, indexPath] }
+      : { slug, id, fsPath: indexPath };
   }
 
   /**
@@ -587,7 +605,8 @@ export class Content {
       throw new Error(`A space named "${key}" already exists.`);
     }
 
-    const raw = matter.stringify(`# ${trimmed}\n\n`, { title: trimmed });
+    const id = newPageId();
+    const raw = matter.stringify(`# ${trimmed}\n\n`, { title: trimmed, id });
     parsePage(raw, fsPath);
 
     // Scaffold the space as a self-contained, ready-to-version folder: its home
@@ -602,7 +621,7 @@ export class Content {
     await fs.writeFile(gitkeepPath, "", { encoding: "utf8", flag: "wx" });
     await fs.writeFile(gitignorePath, SPACE_GITIGNORE, { encoding: "utf8", flag: "wx" });
 
-    return { slug: key, fsPath, changedFsPaths: [fsPath, gitkeepPath, gitignorePath] };
+    return { slug: key, id, fsPath, changedFsPaths: [fsPath, gitkeepPath, gitignorePath] };
   }
 
   /**
@@ -800,6 +819,10 @@ export class Content {
       ...(targetConversion ? [targetConversion.from, targetConversion.to] : []),
     ];
 
+    // Capture the tree before the rename so bare wiki-links can be resolved
+    // against the old layout when we fix up inbound links below.
+    const preTitles = await this.titleIndex();
+
     if (targetConversion) {
       await this.applyPromotion(targetConversion);
     }
@@ -808,10 +831,12 @@ export class Content {
     await fs.rename(sourcePath, destinationPath);
     await this.pruneEmptyDirs(path.dirname(sourcePath));
 
+    const rewritten = await this.rewriteLinksForMove(cleanSource, newSlug, preTitles);
+
     return {
       oldSlug: cleanSource,
       newSlug,
-      changedFsPaths: uniquePaths(changedFsPaths),
+      changedFsPaths: uniquePaths([...changedFsPaths, ...rewritten]),
     };
   }
 
@@ -887,7 +912,13 @@ export class Content {
       ? path.join(parentDir, freeName)
       : path.join(parentDir, `${freeName}.md`);
 
+    // Capture the tree before the rename so bare wiki-links can be resolved
+    // against the old layout when we fix up inbound links below.
+    const preTitles = await this.titleIndex();
+
     await fs.rename(sourcePath, destinationPath);
+
+    const rewritten = await this.rewriteLinksForMove(cleanSource, newSlug, preTitles);
 
     // Renaming a top-level space renames its whole folder, which carries the
     // space's own `.git` with it — the move itself is invisible to git. But the
@@ -896,8 +927,8 @@ export class Content {
     // the space-root dirs and commits index.md only if its content changed.
     const isSpaceRename = parentSlug === "" && sourceIsSection;
     const changedFsPaths = isSpaceRename
-      ? [sourcePath, destinationPath, path.join(destinationPath, "index.md")]
-      : [sourcePath, destinationPath];
+      ? [sourcePath, destinationPath, path.join(destinationPath, "index.md"), ...rewritten]
+      : [sourcePath, destinationPath, ...rewritten];
 
     return {
       oldSlug: cleanSource,
@@ -941,6 +972,90 @@ export class Content {
     };
     collect(await this.tree("all"));
     return map;
+  }
+
+  /**
+   * Flat id -> slug map, used to resolve move-proof `[[id:<id>]]` links to the
+   * page's current location. Only pages that carry an id are included; on the
+   * astronomically unlikely duplicate id, the first walked page wins.
+   */
+  async idIndex(): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    const collect = (nodes: PageNode[]) => {
+      for (const n of nodes) {
+        if (n.id && !map.has(n.id)) map.set(n.id, n.slug);
+        collect(n.children);
+      }
+    };
+    collect(await this.tree("all"));
+    return map;
+  }
+
+  /**
+   * After a page/section changed slug (`oldSlug` → `newSlug`, taking every
+   * descendant with it), rewrite links across the whole KB so they follow it.
+   * Call this AFTER the on-disk rename, passing the title index captured BEFORE
+   * it (`preTitles`) so bare wiki-links can be resolved against the old tree.
+   * Returns the fsPaths of the files it changed, for the caller to commit.
+   */
+  private async rewriteLinksForMove(
+    oldSlug: string,
+    newSlug: string,
+    preTitles: Map<string, string>
+  ): Promise<string[]> {
+    if (!oldSlug || oldSlug === newSlug) return [];
+
+    const postTitles = await this.titleIndex();
+    const preIsPage = (s: string) => preTitles.has(s);
+    const postIsPage = (s: string) => postTitles.has(s);
+    // Prefix-aware remap: the moved page and every slug beneath it.
+    const remap = (t: string): string =>
+      t === oldSlug
+        ? newSlug
+        : t.startsWith(`${oldSlug}/`)
+          ? newSlug + t.slice(oldSlug.length)
+          : t;
+
+    const nodes: PageNode[] = [];
+    const collect = (ns: PageNode[]) => {
+      for (const n of ns) {
+        nodes.push(n);
+        collect(n.children);
+      }
+    };
+    collect(await this.tree("all"));
+
+    const changed: string[] = [];
+    for (const node of nodes) {
+      if (!node.fsPath.endsWith(".md")) continue;
+      // The page's own slug before the move (it may sit inside the moved subtree).
+      const preSlug =
+        node.slug === newSlug
+          ? oldSlug
+          : node.slug.startsWith(`${newSlug}/`)
+            ? oldSlug + node.slug.slice(newSlug.length)
+            : node.slug;
+
+      let raw: string;
+      try {
+        raw = await fs.readFile(node.fsPath, "utf8");
+      } catch {
+        continue;
+      }
+      const next = rewriteLinks(raw, {
+        preSlug,
+        postSlug: node.slug,
+        remap,
+        preIsPage,
+        postIsPage,
+      });
+      if (next !== raw) {
+        await fs.writeFile(node.fsPath, next, "utf8");
+        this.parseCache.delete(node.fsPath);
+        changed.push(node.fsPath);
+      }
+    }
+    return changed;
   }
 
   private async markdownFiles(dir: string): Promise<string[]> {
@@ -1148,6 +1263,86 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * A short, collision-resistant page id: 64 random bits as a fixed 13-char
+ * lowercase base36 string. Written to frontmatter on create and never changed,
+ * so `[[id:<id>]]` links survive moves/renames. Purely alphanumeric, so it needs
+ * no YAML quoting and never clashes with the `[[…]]` / slug / link syntax.
+ */
+export function newPageId(): string {
+  return BigInt("0x" + randomBytes(8).toString("hex"))
+    .toString(36)
+    .padStart(13, "0");
+}
+
+export interface RewriteLinksCtx {
+  /** Slug of the page whose text is being rewritten, BEFORE the move. */
+  preSlug: string;
+  /** Slug of that same page AFTER the move (differs only if it moved too). */
+  postSlug: string;
+  /** Map a target slug from its old value to its new one (prefix-aware). */
+  remap: (target: string) => string;
+  /** Did a slug exist BEFORE the move? (resolves bare wiki-links pre-move). */
+  preIsPage: (slug: string) => boolean;
+  /** Does a slug exist AFTER the move? (checks bare links still resolve). */
+  postIsPage: (slug: string) => boolean;
+}
+
+/**
+ * Rewrite the links in one page's raw Markdown so they follow a slug move. Pure
+ * and testable. Handles three forms:
+ *   - absolute Markdown links   `[t](/old/slug)`  → `[t](/new/slug)`
+ *   - full-slug wiki-links      `[[old/slug|L]]`  → `[[new/slug|L]]`
+ *   - bare wiki-links that pointed at the moved page → pinned to `[[new/slug]]`
+ * `[[id:…]]` links are never touched (already move-proof). Bare links that were
+ * already broken, or that still resolve to the right page on their own, are left
+ * as-is to keep churn minimal.
+ */
+export function rewriteLinks(raw: string, ctx: RewriteLinksCtx): string {
+  const { preSlug, postSlug, remap, preIsPage, postIsPage } = ctx;
+
+  // [[wiki-links]] — target may be an id, a full slug, or a bare name.
+  let out = raw.replace(/\[\[([^\]\n]+)\]\]/g, (full, inner: string) => {
+    const bar = inner.indexOf("|");
+    const rawTarget = (bar === -1 ? inner : inner.slice(0, bar)).trim();
+    const labelPart = bar === -1 ? "" : inner.slice(bar); // keeps the leading "|"
+    if (!rawTarget || /^id:/i.test(rawTarget)) return full;
+
+    const hadSlash = rawTarget.startsWith("/");
+    const bareTarget = rawTarget.replace(/^\/+/, "");
+
+    if (hadSlash || bareTarget.includes("/")) {
+      // Full/absolute slug: location-independent, so rewrite only when it points
+      // into the moved subtree.
+      const mapped = remap(bareTarget);
+      if (mapped === bareTarget) return full;
+      return `[[${hadSlash ? "/" : ""}${mapped}${labelPart}]]`;
+    }
+
+    // Bare name: resolve against the pre-move tree to see what it pointed at.
+    const preTarget = resolveWikiTarget(rawTarget, preSlug, preIsPage);
+    if (!preIsPage(preTarget)) return full; // was already broken — leave it
+    const newTarget = remap(preTarget);
+    // Keep it bare if it still resolves to the right page from the new context.
+    if (resolveWikiTarget(rawTarget, postSlug, postIsPage) === newTarget) return full;
+    return `[[${newTarget}${labelPart}]]`;
+  });
+
+  // Absolute Markdown links `](/space/…)` — pure prefix rewrite.
+  out = out.replace(/\]\((\/[^)\s]+)\)/g, (full, url: string) => {
+    const m = /^\/([^#?]*)([#?][^)]*)?$/.exec(url);
+    if (!m) return full;
+    const target = m[1];
+    const suffix = m[2] ?? "";
+    if (!target || target.includes("/_assets/")) return full;
+    const mapped = remap(target);
+    if (mapped === target) return full;
+    return `](/${mapped}${suffix})`;
+  });
+
+  return out;
 }
 
 function uniquePaths(paths: string[]): string[] {

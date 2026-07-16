@@ -356,3 +356,122 @@ test("issue #4: createFolder rejects a missing parent space", async () => {
     await kb.cleanup();
   }
 });
+
+test("issue #3: create writes a stable id, surfaced on the tree node and idIndex", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+
+    const created = await content.createPage("docs", "Deploy", "# Deploy\n");
+    assert.match(created.id, /^[a-z0-9]{13}$/);
+    const raw = await fs.readFile(created.fsPath, "utf8");
+    assert.ok(raw.includes(`id: ${created.id}`), "id is persisted to frontmatter");
+
+    const node = (await content.spaceTree("docs")).find((n) => n.slug === "docs/deploy");
+    assert.equal(node?.id, created.id);
+
+    const ids = await content.idIndex();
+    assert.equal(ids.get(created.id), "docs/deploy");
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #3: a page keeps its id after being moved, so an [[id:…]] link stays valid", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Section", "# Section\n"); // destination parent
+    const created = await content.createPage("docs", "Target", "# Target\n");
+
+    const moved = await content.movePage("docs/target", "docs/section");
+    assert.ok(moved);
+    assert.equal(moved!.oldSlug, "docs/target");
+    assert.equal(moved!.newSlug, "docs/section/target");
+
+    // Same id, now resolving to the new location; frontmatter is untouched.
+    const ids = await content.idIndex();
+    assert.equal(ids.get(created.id), "docs/section/target");
+    const movedPage = await content.load("docs/section/target");
+    assert.equal(movedPage?.data.id, created.id);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #3: moving a page rewrites inbound links (bare, full-slug, absolute) and leaves id links", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Guide", "# Guide\n"); // becomes a section
+    const target = await content.createPage("docs/guide", "Target", "# Target\n");
+    // A sibling links by bare name; a cousin links by full slug, absolute URL, and id.
+    await content.createPage("docs/guide", "Sibling", "See [[target]].\n");
+    await content.createPage(
+      "docs",
+      "Cousin",
+      `Full [[docs/guide/target]]. Abs [x](/docs/guide/target). Id [[id:${target.id}|t]].\n`
+    );
+    await content.createPage("docs", "Dest", "# Dest\n"); // move destination
+
+    const moved = await content.movePage("docs/guide/target", "docs/dest");
+    assert.equal(moved!.newSlug, "docs/dest/target");
+
+    // The bare link no longer resolves by ancestor-walk, so it is pinned to the
+    // new absolute slug.
+    const sibling = await content.loadRaw("docs/guide/sibling");
+    assert.match(sibling!.raw, /\[\[docs\/dest\/target\]\]/);
+
+    const cousin = await content.loadRaw("docs/cousin");
+    assert.match(cousin!.raw, /\[\[docs\/dest\/target\]\]/); // full-slug wiki-link
+    assert.match(cousin!.raw, /\(\/docs\/dest\/target\)/); // absolute Markdown link
+    assert.match(cousin!.raw, new RegExp(`\\[\\[id:${target.id}\\|t\\]\\]`)); // id link untouched
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #3: moving a section rewrites links to its descendants too", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Area", "# Area\n");
+    await content.createPage("docs/area", "Deep", "# Deep\n"); // descendant
+    await content.createPage(
+      "docs",
+      "Ref",
+      "Link [[docs/area/deep]] and [x](/docs/area/deep).\n"
+    );
+    await content.createPage("docs", "Dest", "# Dest\n");
+
+    const moved = await content.movePage("docs/area", "docs/dest");
+    assert.equal(moved!.newSlug, "docs/dest/area");
+
+    const ref = await content.loadRaw("docs/ref");
+    assert.match(ref!.raw, /\[\[docs\/dest\/area\/deep\]\]/);
+    assert.match(ref!.raw, /\(\/docs\/dest\/area\/deep\)/);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #3: folders and spaces also get a stable id", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    const space = await content.createSpace("Docs");
+    const folder = await content.createFolder("docs", "Runbooks");
+    assert.ok(space.id);
+    assert.ok(folder.id);
+
+    const ids = await content.idIndex();
+    assert.equal(ids.get(space.id), "docs");
+    assert.equal(ids.get(folder.id), "docs/runbooks");
+  } finally {
+    await kb.cleanup();
+  }
+});
