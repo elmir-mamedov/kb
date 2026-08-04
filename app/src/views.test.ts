@@ -78,6 +78,52 @@ test("issue #3: non-editable / rootless views omit the Download button", () => {
   assert.doesNotMatch(html, /_download/);
 });
 
+test("copy link: the page header exposes a Copy link button carrying the slug", () => {
+  const html = layout(pageView());
+  assert.match(
+    html,
+    /<button type="button" class="button secondary" data-copy-slug="flux\/notes" data-copy-link>Copy link<\/button>/
+  );
+});
+
+test("copy link: the sidebar ⋯ menu offers Copy link for a page", () => {
+  const html = layout(
+    pageView({ tree: [node({ slug: "flux/guide", title: "Guide" })] })
+  );
+  assert.match(html, /<button type="button" data-copy-slug="flux\/guide">Copy link<\/button>/);
+});
+
+test("copy link: folders also get a Copy link (header + ⋯ menu)", () => {
+  const html = folderLayout(
+    folderView({ tree: [node({ slug: "flux/box", title: "Box", isFolder: true })] })
+  );
+  // Header button copies the folder's own slug…
+  assert.match(html, /data-copy-slug="flux\/box" data-copy-link>Copy link<\/button>/);
+  // …and the sidebar row for a folder offers it too.
+  assert.match(html, /<button type="button" data-copy-slug="flux\/box">Copy link<\/button>/);
+});
+
+test("copy link: the shortcut script binds Cmd/Ctrl+Shift+L and copies the slug", () => {
+  const html = layout(pageView());
+  // Shift-gated L key, distinct from the plain Cmd/Ctrl+E / +S shortcuts.
+  assert.match(html, /event\.shiftKey/);
+  assert.match(html, /key\.toLowerCase\(\) !== "l"/);
+  // It reads the current page's button, falling back to the active sidebar row.
+  assert.match(html, /querySelector\("\[data-copy-link\]"\)/);
+});
+
+test("copy link: Help dialog documents the copy-link shortcut", () => {
+  const html = layout(pageView());
+  assert.match(html, /Copy this page's relative link/);
+});
+
+test("copy link: non-editable / rootless views omit the header Copy link button", () => {
+  const html = layout(pageView({ canEdit: false, activeSlug: "", isArchiveView: true }));
+  // No header button is rendered (the script's [data-copy-link] selector remains
+  // but is inert without a matching element), so no copyable header control.
+  assert.doesNotMatch(html, /data-copy-link>/);
+});
+
 test("issue #4: the sidebar Create menu offers Page and Folder", () => {
   const html = layout(pageView());
   assert.match(html, /<summary class="sidebar-link">Create<\/summary>/);
@@ -110,6 +156,31 @@ test("only real folders render a folder icon — content sections do not", () =>
   // Exactly one icon instance in the markup (the folder), separate from the CSS rule.
   const icons = html.match(/class="tree-folder-icon"/g) ?? [];
   assert.equal(icons.length, 1);
+});
+
+test("only leaf pages get a dot — folders and pages-with-children do not", () => {
+  const html = layout(
+    pageView({
+      tree: [
+        // A real folder (pure container) — folder icon, no dot.
+        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true, modifiedMs: 4 }),
+        // A content section: a page with children — expand caret, no dot.
+        node({
+          slug: "flux/handbook",
+          title: "Handbook",
+          isSection: true,
+          isFolder: false,
+          modifiedMs: 3,
+          children: [node({ slug: "flux/handbook/intro", title: "Intro", modifiedMs: 2 })],
+        }),
+        // A leaf page — gets the dot.
+        node({ slug: "flux/notes", title: "Notes", modifiedMs: 1 }),
+      ],
+    })
+  );
+  // Two leaf pages in the tree (Notes + the nested Intro), so exactly two dots.
+  const dots = html.match(/class="tree-page-dot"/g) ?? [];
+  assert.equal(dots.length, 2);
 });
 
 test("issue #4: the sidebar ⋯ menu offers New folder", () => {

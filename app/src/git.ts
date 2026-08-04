@@ -4,6 +4,50 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/** One commit that touched a page, as reported by {@link makeGit}'s `fileCommits`. */
+export interface CommitMeta {
+  /** Full commit SHA. */
+  sha: string;
+  /** Committer date, preformatted `YYYY-MM-DD HH:MM` (same format as the "Updated" line). */
+  date: string;
+  /** Commit subject line — ends in `via web` / `via mcp`, revealing who made the edit. */
+  subject: string;
+  /**
+   * The file's path within its space repo *at this commit* (forward slashes).
+   * With `--follow` the path can differ from the current one across a rename, so
+   * this is what a per-commit `git show` must be scoped to.
+   */
+  pathAtCommit: string;
+}
+
+/**
+ * Parse `git log --follow --name-status` output into commits, newest first.
+ * Each commit header line is prefixed with \x01 and its fields are \x1f-separated
+ * (see the `--format` in `fileCommits`); the name-status line(s) that follow give
+ * the file's path at that commit (`M\tpath`, `A\tpath`, or `R100\told\tnew`).
+ */
+function parseFileCommits(stdout: string): CommitMeta[] {
+  const commits: CommitMeta[] = [];
+  let current: CommitMeta | null = null;
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("\x01")) {
+      const [sha, date, subject] = line.slice(1).split("\x1f");
+      current = { sha: sha ?? "", date: date ?? "", subject: subject ?? "", pathAtCommit: "" };
+      commits.push(current);
+    } else if (current && line && !current.pathAtCommit) {
+      // First name-status line for this commit. Renames/copies list old then new;
+      // every other status lists a single path. We want the path at this commit.
+      const parts = line.split("\t");
+      const status = parts[0] ?? "";
+      current.pathAtCommit =
+        status.startsWith("R") || status.startsWith("C")
+          ? parts[2] ?? parts[1] ?? ""
+          : parts[1] ?? "";
+    }
+  }
+  return commits.filter((c) => c.sha);
+}
+
 /**
  * Git auto-commit helpers bound to a knowledge-base directory.
  *
@@ -140,7 +184,66 @@ export function makeGit(kbDir: string) {
     await execFileAsync("git", ["branch", "-m", "main"], { cwd: repoRoot });
   }
 
-  return { kbRelPath, spaceRepoRoot, commitFiles, commitMovedPaths, initSpaceRepo };
+  /**
+   * Commits that touched a page, newest first — the edit history behind the diff
+   * viewer. `--follow` keeps the history spanning renames. Best-effort like
+   * {@link gitUpdated}: a non-repo or untracked file yields `[]` rather than throwing.
+   */
+  async function fileCommits(fsPath: string): Promise<CommitMeta[]> {
+    try {
+      const repoRoot = spaceRepoRoot(fsPath);
+      const rel = relInRepo(fsPath);
+      if (!rel) return [];
+      const { stdout } = await execFileAsync(
+        "git",
+        [
+          "log",
+          "--follow",
+          "--name-status",
+          "--date=format:%Y-%m-%d %H:%M",
+          // \x01 marks a commit header; \x1f separates sha / date / subject.
+          "--format=\x01%H%x1f%cd%x1f%s",
+          "--",
+          rel,
+        ],
+        { cwd: repoRoot }
+      );
+      return parseFileCommits(stdout);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Raw `--word-diff=porcelain` patch for what a single commit changed in a file,
+   * relative to its parent (the initial commit shows the whole file as added).
+   * `pathAtCommit` scopes the diff to the file's path at that commit (rename-safe).
+   * Best-effort: returns "" on any failure.
+   */
+  async function showWordDiff(fsPath: string, sha: string, pathAtCommit: string): Promise<string> {
+    try {
+      const repoRoot = spaceRepoRoot(fsPath);
+      const target = pathAtCommit || relInRepo(fsPath);
+      const { stdout } = await execFileAsync(
+        "git",
+        ["show", "--format=", "--no-color", "--word-diff=porcelain", sha, "--", target],
+        { cwd: repoRoot }
+      );
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+
+  return {
+    kbRelPath,
+    spaceRepoRoot,
+    commitFiles,
+    commitMovedPaths,
+    initSpaceRepo,
+    fileCommits,
+    showWordDiff,
+  };
 }
 
 export type Git = ReturnType<typeof makeGit>;

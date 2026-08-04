@@ -1,4 +1,5 @@
 import type { PageNode, SpaceInfo } from "./content.js";
+import type { DiffLine } from "./diff.js";
 
 export function escapeHtml(s: string): string {
   return s
@@ -37,8 +38,12 @@ function renderTree(
       // as "container" — distinct from an ordinary content page that merely
       // happens to have child pages.
       const folderIcon = n.isFolder ? FOLDER_ICON : "";
+      // A leaf content page — not a folder and with no child pages/folders —
+      // gets a dot so it reads unambiguously as a standalone page. A page that
+      // has children already shows the expand caret, so it needs no dot.
+      const pageDot = !n.isFolder && !hasChildren ? PAGE_DOT : "";
       const row = options.dragEnabled
-        ? `<div class="tree-row">${toggle}${folderIcon}${label}${treeMenu(n)}</div>`
+        ? `<div class="tree-row">${toggle}${folderIcon}${pageDot}${label}${treeMenu(n)}</div>`
         : label;
       const children = hasChildren
         ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
@@ -80,6 +85,7 @@ function treeMenu(node: PageNode): string {
       ${newPage}
       ${newFolder}
       ${middle}
+      <button type="button" data-copy-slug="${escapeHtml(slug)}">Copy link</button>
       <form method="post" action="/_archive${slugPath(slug)}">
         <button type="submit">Archive</button>
       </form>
@@ -136,6 +142,27 @@ export interface EditView {
   raw: string;
   error?: string;
   notice?: string;
+  username?: string | null;
+}
+
+export interface DiffView {
+  siteTitle: string;
+  spaces: SpaceInfo[];
+  spaceKey: string;
+  tree: PageNode[];
+  activeSlug: string;
+  titles: Map<string, string>;
+  title: string;
+  /** Total commits in this page's history (0 ⇒ empty state). */
+  commitCount: number;
+  /** Zero-based index of the shown revision (0 = latest edit). */
+  revIndex: number;
+  /** Committer date of the shown revision (preformatted). */
+  revDate?: string | null;
+  /** Commit subject of the shown revision (ends in `via web` / `via mcp`). */
+  revSubject?: string | null;
+  /** Parsed word-diff for the shown revision; no `line` entries ⇒ no textual change. */
+  lines: DiffLine[];
   username?: string | null;
 }
 
@@ -265,10 +292,23 @@ function sessionActions(username?: string | null): string {
   </form>`;
 }
 
-/** Help + username + Log out pinned to the top-right corner of the page. */
+/**
+ * Sun/moon button that flips the color theme. Which glyph shows is decided in
+ * CSS from the root `data-theme`; the click is handled by the delegated listener
+ * in `THEME_SCRIPT`, so this markup needs no per-page script of its own.
+ */
+function themeToggle(): string {
+  return `<button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode">
+    <svg class="theme-icon icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+    <svg class="theme-icon icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+  </button>`;
+}
+
+/** Help + theme toggle + username + Log out pinned to the top-right corner. */
 function sessionCorner(username?: string | null): string {
   if (!username) return "";
   return `<div class="session-corner">
+    ${themeToggle()}
     <button type="button" class="button secondary" data-help-open>Help</button>
     ${sessionActions(username)}
   </div>
@@ -276,10 +316,38 @@ ${HELP_DIALOG}
 <script>${HELP_SCRIPT}</script>`;
 }
 
+/**
+ * The shared document <head>: theming meta, favicons, the inlined stylesheet, and
+ * the FOUC-safe theme script. The script sets `data-theme` on <html> before the
+ * body paints (from localStorage, else the OS preference) and wires the toggle.
+ */
+function renderHead(title: string): string {
+  return `<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+${FAVICON_TAGS}
+<title>${title}</title>
+<style>${STYLES}</style>
+<script>${THEME_SCRIPT}</script>
+</head>`;
+}
+
 function actionForm(actionPrefix: string, slug: string, label: string, variant: string): string {
   return `<form class="action-form" method="post" action="${actionPrefix}${slugPath(slug)}">
     <button class="button ${variant}" type="submit">${escapeHtml(label)}</button>
   </form>`;
+}
+
+/**
+ * Page-header "Copy link" button. Copies the page's relative address — the slug,
+ * which starts with the space key and ends with the leaf (e.g. `flux/backlog`).
+ * `data-copy-slug` carries the value copied by the delegated `COPY_LINK_SCRIPT`
+ * handler; `data-copy-link` marks it as the current page's button so the
+ * keyboard shortcut can find it.
+ */
+function copyLinkButton(slug: string): string {
+  return `<button type="button" class="button secondary" data-copy-slug="${escapeHtml(slug)}" data-copy-link>Copy link</button>`;
 }
 
 export function layout(v: PageView): string {
@@ -294,10 +362,16 @@ export function layout(v: PageView): string {
     v.canEdit === false
       ? ""
       : `<a class="button secondary" href="/_edit${slugPath(v.activeSlug)}" data-edit-link>Edit</a>`;
+  const diffLink =
+    v.canEdit === false || !v.activeSlug
+      ? ""
+      : `<a class="button secondary" href="/_diff${slugPath(v.activeSlug)}">Diff</a>`;
   const downloadLink =
     v.canEdit === false || !v.activeSlug
       ? ""
       : `<a class="button secondary" href="/_download${slugPath(v.activeSlug)}" download>Download</a>`;
+  const copyLink =
+    v.canEdit === false || !v.activeSlug ? "" : copyLinkButton(v.activeSlug);
   const archiveAction =
     v.canEdit === false || v.isArchived || !v.activeSlug
       ? ""
@@ -320,13 +394,7 @@ export function layout(v: PageView): string {
 
   return `<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-${FAVICON_TAGS}
-<title>${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
-<style>${STYLES}</style>
-</head>
+${renderHead(`${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
 ${sessionCorner(v.username)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchiveView)}
@@ -337,12 +405,13 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchi
       <h1>${escapeHtml(v.title)}</h1>
       <div class="meta">${metaInner}</div>
     </div>
-    <div class="actions">${editLink}${downloadLink}${archiveAction}${deleteAction}${restoreAction}</div>
+    <div class="actions">${editLink}${diffLink}${downloadLink}${copyLink}${archiveAction}${deleteAction}${restoreAction}</div>
   </header>
   ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
 </main>
 <script>${EDIT_SHORTCUT_SCRIPT}</script>
+<script>${COPY_LINK_SCRIPT}</script>
 ${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
 ${v.contentHtml.includes('class="mermaid"') ? MERMAID_SCRIPT : ""}
 </body>
@@ -412,6 +481,7 @@ export function folderLayout(v: FolderView): string {
     ? actionForm("/_restore", v.activeSlug, "Restore", "primary")
     : "";
   const deleteAction = `<a class="button danger" href="/_delete${slugPath(v.activeSlug)}">Delete</a>`;
+  const copyLink = copyLinkButton(v.activeSlug);
 
   const archivedAt = v.archivedAt ? ` on ${escapeHtml(v.archivedAt)}` : "";
   const archivedBanner = v.isArchived
@@ -423,13 +493,7 @@ export function folderLayout(v: FolderView): string {
 
   return `<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-${FAVICON_TAGS}
-<title>${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
-<style>${STYLES}</style>
-</head>
+${renderHead(`${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
 ${sessionCorner(v.username)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, false)}
@@ -440,7 +504,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, false)}
       <h1>${escapeHtml(v.title)}</h1>
       <div class="meta"><span class="folder-tag">Folder</span></div>
     </div>
-    <div class="actions">${renameControl}${archiveAction}${deleteAction}${restoreAction}</div>
+    <div class="actions">${copyLink}${renameControl}${archiveAction}${deleteAction}${restoreAction}</div>
   </header>
   ${notice}${archivedBanner}
   <section class="folder-view">
@@ -449,6 +513,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, false)}
   </section>
 </main>
 <script>${MOVE_SCRIPT}</script>
+<script>${COPY_LINK_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -524,13 +589,7 @@ export function editLayout(v: EditView): string {
 
   return `<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-${FAVICON_TAGS}
-<title>Edit ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}</title>
-<style>${STYLES}</style>
-</head>
+${renderHead(`Edit ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
 ${sessionCorner(v.username)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
@@ -558,6 +617,104 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
 </main>
 <script>${EDITOR_SCRIPT}</script>
 <script>${MOVE_SCRIPT}</script>
+<script>${COPY_LINK_SCRIPT}</script>
+</body>
+</html>`;
+}
+
+/** A small pill labeling who made an edit, inferred from the commit-message suffix. */
+function editSourceBadge(subject: string): string {
+  const s = subject.toLowerCase();
+  if (s.endsWith("via mcp")) return `<span class="badge badge-mcp">LLM</span>`;
+  if (s.endsWith("via web")) return `<span class="badge badge-web">Person</span>`;
+  return "";
+}
+
+/** Render parsed word-diff lines into the body of a <pre class="diffview">. */
+function renderDiffBody(lines: DiffLine[]): string {
+  const rows: string[] = [];
+  let sawHunk = false;
+  for (const line of lines) {
+    if (line.type === "hunk") {
+      // Suppress the leading header; mark only the gaps between later hunks.
+      if (sawHunk) rows.push(`<span class="diff-sep">· · ·</span>`);
+      sawHunk = true;
+      continue;
+    }
+    rows.push(
+      line.runs
+        .map((r) => {
+          const text = escapeHtml(r.text);
+          if (r.kind === "add") return `<ins class="diff-add">${text}</ins>`;
+          if (r.kind === "del") return `<del class="diff-del">${text}</del>`;
+          return text;
+        })
+        .join("")
+    );
+  }
+  return rows.join("\n");
+}
+
+export function diffLayout(v: DiffView): string {
+  const pagePath = slugPath(v.activeSlug);
+  const hasHistory = v.commitCount > 0;
+  const hasChanges = v.lines.some((l) => l.type === "line");
+
+  let panel: string;
+  if (!hasHistory) {
+    panel = `<div class="notice">No saved history yet for this page. Edits create history the moment they are committed.</div>`;
+  } else {
+    const base = `/_diff${pagePath}`;
+    const olderIdx = v.revIndex + 1;
+    const newerIdx = v.revIndex - 1;
+    const olderBtn =
+      olderIdx < v.commitCount
+        ? `<a class="button secondary" href="${base}?rev=${olderIdx}">← Older</a>`
+        : `<span class="button secondary disabled">← Older</span>`;
+    const newerBtn =
+      newerIdx >= 0
+        ? `<a class="button secondary" href="${base}?rev=${newerIdx}">Newer →</a>`
+        : `<span class="button secondary disabled">Newer →</span>`;
+    const badge = v.revSubject ? editSourceBadge(v.revSubject) : "";
+    const date = v.revDate ? `<span class="diff-date">${escapeHtml(v.revDate)}</span>` : "";
+    const subject = v.revSubject
+      ? `<span class="diff-subject">${escapeHtml(v.revSubject)}</span>`
+      : "";
+    const revbar = `<div class="revbar">
+      <div class="revbar-meta">
+        <span class="diff-pos">Edit ${v.revIndex + 1} of ${v.commitCount}</span>
+        ${date}${subject}${badge}
+      </div>
+      <div class="revbar-nav">${newerBtn}${olderBtn}</div>
+    </div>`;
+    const body = hasChanges
+      ? `<pre class="diffview">${renderDiffBody(v.lines)}</pre>`
+      : `<div class="notice">No textual changes in this edit (it may have only touched frontmatter or whitespace).</div>`;
+    panel = `${revbar}${body}`;
+  }
+
+  return `<!doctype html>
+<html lang="en">
+${renderHead(`History ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
+<body>
+${sessionCorner(v.username)}
+${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
+<main class="content">
+  ${breadcrumb(v.activeSlug, v.titles)}
+  <header class="page-head">
+    <div>
+      <h1>History <span class="diff-title">${escapeHtml(v.title)}</span></h1>
+      <div class="meta"><span class="path-label">${escapeHtml(pagePath)}</span></div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="${pagePath}">Back to page</a>
+      <a class="button secondary" href="/_edit${pagePath}">Edit</a>
+    </div>
+  </header>
+  ${panel}
+</main>
+<script>${MOVE_SCRIPT}</script>
+<script>${COPY_LINK_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -569,14 +726,9 @@ export function loginLayout(v: LoginView): string {
 
   return `<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-${FAVICON_TAGS}
-<title>Sign in · ${escapeHtml(v.siteTitle)}</title>
-<style>${STYLES}</style>
-</head>
+${renderHead(`Sign in · ${escapeHtml(v.siteTitle)}`)}
 <body class="login-page">
+<div class="session-corner">${themeToggle()}</div>
 <main class="login-panel">
   <h1>${escapeHtml(v.siteTitle)}</h1>
   <p class="login-subtitle">Sign in to continue.</p>
@@ -655,13 +807,7 @@ export function spacesLayout(v: SpacesView): string {
 
   return `<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-${FAVICON_TAGS}
-<title>Spaces · ${escapeHtml(v.siteTitle)}</title>
-<style>${STYLES}</style>
-</head>
+${renderHead(`Spaces · ${escapeHtml(v.siteTitle)}`)}
 <body class="spaces-page">
 ${sessionCorner(v.username)}
 <main class="spaces-main">
@@ -722,6 +868,9 @@ const FAVICON_TAGS = `<link rel="icon" href="/favicon.ico" sizes="any" />
 /** Inline folder glyph prefixed to section rows in the sidebar tree. */
 const FOLDER_ICON = `<svg class="tree-folder-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M1.75 4c0-.69.56-1.25 1.25-1.25h2.94c.33 0 .65.13.88.37l.87.88c.05.04.11.07.18.07H13c.69 0 1.25.56 1.25 1.25v6.06c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z"/></svg>`;
 
+/** Inline dot glyph prefixed to leaf-page rows (a content page with no children). */
+const PAGE_DOT = `<svg class="tree-page-dot" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg>`;
+
 /** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
 const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   <form method="dialog" class="help-head">
@@ -730,7 +879,7 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   </form>
   <section class="help-section">
     <h3>About Flux</h3>
-    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
+    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, copy its link, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
   </section>
   <section class="help-section">
     <h3>Keyboard shortcuts</h3>
@@ -739,6 +888,8 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
       <dd>Edit the page you are viewing</dd>
       <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>S</kbd></dt>
       <dd>Save the page you are editing</dd>
+      <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd></dt>
+      <dd>Copy this page's relative link (space/&hellip;/page)</dd>
       <dt><kbd>Esc</kbd></dt>
       <dd>Close this dialog</dd>
     </dl>
@@ -776,16 +927,147 @@ const EDIT_SHORTCUT_SCRIPT = `
 `;
 
 /**
+ * "Copy link" for the current page / any sidebar row. Copies the page's relative
+ * address — its slug, which starts with the space key and ends with the leaf
+ * (e.g. `flux/backlog`). Three entry points share this one handler:
+ *   1. Cmd/Ctrl+Shift+L copies the page being viewed.
+ *   2. The sidebar ⋯ menu's "Copy link" copies that row's slug.
+ *   3. The page-header "Copy link" button copies the current page.
+ * Buttons carry the slug in `data-copy-slug`; the current page's button is also
+ * tagged `data-copy-link` so the shortcut can find it (falling back to the active
+ * sidebar row on views without a header button, e.g. the editor/history).
+ * Clipboard access degrades gracefully: it prefers the async Clipboard API and
+ * falls back to a hidden-textarea `execCommand("copy")` for non-secure origins
+ * (the default LAN host is plain HTTP, where `navigator.clipboard` is absent).
+ */
+const COPY_LINK_SCRIPT = `
+(() => {
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(
+        () => true,
+        () => fallbackCopy(text)
+      );
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function flash(el, ok) {
+    if (!el) return;
+    const swap = el.hasAttribute("data-copy-slug");
+    if (swap) {
+      if (el.dataset.copyLabel === undefined) el.dataset.copyLabel = el.textContent;
+      el.textContent = ok ? "Copied!" : "Copy failed";
+    }
+    el.classList.add(ok ? "copied" : "copy-failed");
+    window.clearTimeout(el.__copyTimer);
+    el.__copyTimer = window.setTimeout(() => {
+      if (swap && el.dataset.copyLabel !== undefined) el.textContent = el.dataset.copyLabel;
+      el.classList.remove("copied", "copy-failed");
+    }, 1200);
+  }
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    const btn = target && target.closest ? target.closest("[data-copy-slug]") : null;
+    if (!btn) return;
+    event.preventDefault();
+    const slug = btn.getAttribute("data-copy-slug") || "";
+    copyText(slug).then((ok) => flash(btn, ok));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return;
+    if (event.key.toLowerCase() !== "l") return;
+    const pageBtn = document.querySelector("[data-copy-link]");
+    const active = document.querySelector(".tree a.active[data-drag-slug]");
+    const slug = pageBtn
+      ? pageBtn.getAttribute("data-copy-slug")
+      : active
+      ? active.getAttribute("data-drag-slug")
+      : null;
+    if (!slug) return;
+    event.preventDefault();
+    copyText(slug).then((ok) => flash(pageBtn || active, ok));
+  });
+})();
+`;
+
+/**
+ * Applies the color theme and keeps it in sync. Runs in <head> before first
+ * paint so there is no flash of the wrong theme: it reads the saved preference
+ * (`kb:theme`), falling back to the OS `prefers-color-scheme`, and sets
+ * `data-theme` on <html>. A single delegated click handler flips + persists the
+ * theme for any `[data-theme-toggle]` button on the page, and re-renders Mermaid
+ * diagrams (if present) so they re-color live.
+ */
+const THEME_SCRIPT = `
+(() => {
+  const KEY = "kb:theme";
+  const root = document.documentElement;
+  const read = () => { try { return localStorage.getItem(KEY); } catch (e) { return null; } };
+  const systemDark = () => !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const effective = () => {
+    const s = read();
+    return s === "light" || s === "dark" ? s : (systemDark() ? "dark" : "light");
+  };
+  const apply = (theme) => {
+    root.dataset.theme = theme;
+    if (typeof window.__renderMermaid === "function") window.__renderMermaid();
+  };
+  apply(effective());
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    const btn = target && target.closest ? target.closest("[data-theme-toggle]") : null;
+    if (!btn) return;
+    event.preventDefault();
+    const next = root.dataset.theme === "dark" ? "light" : "dark";
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+    apply(next);
+  });
+})();
+`;
+
+/**
  * Loads Mermaid from the app's own bundle and renders every `<pre class="mermaid">`
  * container into an SVG diagram. Injected only on pages that contain one (see
  * `layout`). `securityLevel: "strict"` keeps Mermaid's DOMPurify sanitizer on,
  * matching the viewer's no-raw-HTML posture. The `<script>` sits at the end of
- * <body>, so all diagram containers are already in the DOM when `run()` fires.
+ * <body>, so all diagram containers are already in the DOM when it runs.
+ *
+ * The diagram theme follows the page theme. Because Mermaid bakes colors into the
+ * generated SVG, we stash each container's source and expose `window.__renderMermaid`,
+ * which re-initializes with the current theme and re-renders — `THEME_SCRIPT` calls
+ * it on every toggle so on-screen diagrams re-color live.
  */
 const MERMAID_SCRIPT = `<script src="/_vendor/mermaid/mermaid.min.js"></script>
 <script>
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" });
-  mermaid.run();
+  (() => {
+    const nodes = Array.from(document.querySelectorAll("pre.mermaid"));
+    nodes.forEach((n) => { if (n.dataset.src === undefined) n.dataset.src = n.textContent; });
+    window.__renderMermaid = () => {
+      if (typeof mermaid === "undefined") return;
+      const dark = document.documentElement.dataset.theme === "dark";
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+      nodes.forEach((n) => { n.textContent = n.dataset.src; n.removeAttribute("data-processed"); });
+      mermaid.run({ nodes });
+    };
+    window.__renderMermaid();
+  })();
 </script>`;
 
 /** Cmd/Ctrl+S submits the open editor form instead of the browser save dialog. */
@@ -1064,9 +1346,80 @@ const SPACE_MENU_SCRIPT = `
 
 const STYLES = `
 :root{
+  color-scheme:light;
   --bg:#fff; --fg:#1f2328; --muted:#6b7280; --line:#e5e7eb;
-  --accent:#2563eb; --sidebar:#f7f8fa; --code-bg:#f6f8fa;
+  --accent:#2563eb; --on-accent:#fff; --sidebar:#f7f8fa; --code-bg:#f6f8fa;
   --maxw:1216px;
+  --fg-secondary:#374151;
+  --surface:#fff; --surface-hover:#eef0f3; --surface-hover-2:#f7f8fa;
+  --active-bg:#e7efff; --selected-bg:#dbeafe;
+  --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
+  --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
+  --shadow-sm:0 2px 8px rgba(0,0,0,.08);
+  --shadow-md:0 2px 8px rgba(0,0,0,.12);
+  --shadow-lg:0 8px 30px rgba(0,0,0,.18);
+  --shadow-card:0 1px 4px rgba(0,0,0,.06);
+  --backdrop:rgba(15,23,42,.35);
+  --diff-add-fg:#166534; --diff-add-bg:#dcfce7;
+  --diff-del-fg:#991b1b; --diff-del-bg:#fee2e2;
+  --error-fg:#991b1b; --error-bg:#fef2f2; --error-border:#fecaca;
+  --success-fg:#166534; --success-bg:#f0fdf4; --success-border:#bbf7d0;
+  --warning-fg:#92400e; --warning-bg:#fffbeb; --warning-border:#fde68a;
+  --badge-web-fg:#1e40af; --badge-web-bg:#e7efff; --badge-web-border:#c7d7fe;
+  --badge-mcp-fg:#6b21a8; --badge-mcp-bg:#f3e8ff; --badge-mcp-border:#e2ccf9;
+  --hl-comment:#6a737d; --hl-keyword:#d73a49; --hl-string:#032f62;
+  --hl-number:#005cc5; --hl-title:#6f42c1; --hl-attr:#e36209;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#30363d;
+  --accent:#4493f8; --on-accent:#0d1117; --sidebar:#0b0e14; --code-bg:#161b22;
+  --fg-secondary:#c9d1d9;
+  --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
+  --active-bg:#1f2d44; --selected-bg:#253a5e;
+  --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
+  --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
+  --shadow-sm:0 2px 8px rgba(0,0,0,.5);
+  --shadow-md:0 2px 8px rgba(0,0,0,.6);
+  --shadow-lg:0 8px 30px rgba(0,0,0,.7);
+  --shadow-card:0 1px 4px rgba(0,0,0,.5);
+  --backdrop:rgba(1,4,9,.6);
+  --diff-add-fg:#7ee787; --diff-add-bg:#12261a;
+  --diff-del-fg:#ffa198; --diff-del-bg:#2d1213;
+  --error-fg:#ff7b72; --error-bg:#2d1213; --error-border:#5c1a1a;
+  --success-fg:#56d364; --success-bg:#12261a; --success-border:#1a4023;
+  --warning-fg:#e3b341; --warning-bg:#2b2411; --warning-border:#4a3b12;
+  --badge-web-fg:#a8c7fa; --badge-web-bg:#172554; --badge-web-border:#1e3a8a;
+  --badge-mcp-fg:#d8b4fe; --badge-mcp-bg:#2e1065; --badge-mcp-border:#4c1d95;
+  --hl-comment:#8b949e; --hl-keyword:#ff7b72; --hl-string:#a5d6ff;
+  --hl-number:#79c0ff; --hl-title:#d2a8ff; --hl-attr:#ffa657;
+}
+/* No-JS fallback: honor the OS setting when no explicit choice was made. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]):not([data-theme="dark"]){
+    color-scheme:dark;
+    --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#30363d;
+    --accent:#4493f8; --on-accent:#0d1117; --sidebar:#0b0e14; --code-bg:#161b22;
+    --fg-secondary:#c9d1d9;
+    --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
+    --active-bg:#1f2d44; --selected-bg:#253a5e;
+    --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
+    --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
+    --shadow-sm:0 2px 8px rgba(0,0,0,.5);
+    --shadow-md:0 2px 8px rgba(0,0,0,.6);
+    --shadow-lg:0 8px 30px rgba(0,0,0,.7);
+    --shadow-card:0 1px 4px rgba(0,0,0,.5);
+    --backdrop:rgba(1,4,9,.6);
+    --diff-add-fg:#7ee787; --diff-add-bg:#12261a;
+    --diff-del-fg:#ffa198; --diff-del-bg:#2d1213;
+    --error-fg:#ff7b72; --error-bg:#2d1213; --error-border:#5c1a1a;
+    --success-fg:#56d364; --success-bg:#12261a; --success-border:#1a4023;
+    --warning-fg:#e3b341; --warning-bg:#2b2411; --warning-border:#4a3b12;
+    --badge-web-fg:#a8c7fa; --badge-web-bg:#172554; --badge-web-border:#1e3a8a;
+    --badge-mcp-fg:#d8b4fe; --badge-mcp-bg:#2e1065; --badge-mcp-border:#4c1d95;
+    --hl-comment:#8b949e; --hl-keyword:#ff7b72; --hl-string:#a5d6ff;
+    --hl-number:#79c0ff; --hl-title:#d2a8ff; --hl-attr:#ffa657;
+  }
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -1086,10 +1439,10 @@ a:hover{text-decoration:underline}
 .brand:hover{text-decoration:none}
 .sidebar-link{
   display:block; margin:0 0 14px; padding:4px 6px; border-radius:6px;
-  color:#374151; font-size:14px; font-weight:600;
+  color:var(--fg-secondary); font-size:14px; font-weight:600;
 }
-.sidebar-link:hover{background:#eef0f3; text-decoration:none}
-.sidebar-link.active{background:#e7efff; color:var(--accent)}
+.sidebar-link:hover{background:var(--surface-hover); text-decoration:none}
+.sidebar-link.active{background:var(--active-bg); color:var(--accent)}
 /* "Create" disclosure: a sidebar link that reveals Page / Folder choices. */
 .create-menu{margin:0 0 14px}
 .create-menu>summary{margin:0; list-style:none; cursor:pointer}
@@ -1097,26 +1450,27 @@ a:hover{text-decoration:underline}
 .create-menu>summary::marker{content:""}
 .create-menu-pop{
   margin:6px 0 0; padding:4px; display:flex; flex-direction:column;
-  background:#fff; border:1px solid var(--line); border-radius:6px;
-  box-shadow:0 2px 8px rgba(0,0,0,.08);
+  background:var(--surface); border:1px solid var(--line); border-radius:6px;
+  box-shadow:var(--shadow-sm);
 }
 .create-menu-pop form{margin:0}
 .create-menu-pop button{
   display:block; width:100%; text-align:left; border:0; background:transparent;
-  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  padding:6px 8px; border-radius:4px; color:var(--fg-secondary); font-size:13px; font-weight:600;
   cursor:pointer; font-family:inherit;
 }
-.create-menu-pop button:hover{background:#eef0f3}
+.create-menu-pop button:hover{background:var(--surface-hover)}
 /* Inline name forms (create-folder + rename) in the Create / ⋯ menus. */
 .menu-name-form{display:flex; flex-direction:column; gap:4px; margin:0}
 .menu-name-form input[type=text]{
   width:100%; box-sizing:border-box; padding:5px 7px; font-size:13px;
+  color:var(--fg); background:var(--surface);
   border:1px solid var(--line); border-radius:4px;
 }
 /* Folder contents view */
 .folder-tag{
   display:inline-block; padding:2px 8px; border-radius:999px;
-  background:#eef0f3; color:var(--muted); font-size:12px; font-weight:600;
+  background:var(--surface-hover); color:var(--muted); font-size:12px; font-weight:600;
 }
 .folder-view{margin-top:8px}
 .folder-create{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-bottom:18px}
@@ -1136,28 +1490,28 @@ a:hover{text-decoration:underline}
 .rename-menu>summary::marker{content:""}
 .rename-menu .menu-name-form{
   position:absolute; right:0; z-index:5; margin-top:6px; width:210px; padding:8px;
-  background:#fff; border:1px solid var(--line); border-radius:6px;
-  box-shadow:0 2px 8px rgba(0,0,0,.08);
+  background:var(--surface); border:1px solid var(--line); border-radius:6px;
+  box-shadow:var(--shadow-sm);
 }
 .root-drop{
   margin:0 0 14px; padding:5px 6px; border:1px dashed var(--line);
   border-radius:6px; color:var(--muted); font-size:13px; font-weight:600;
 }
 .move-error{
-  margin:0 0 14px; padding:8px 10px; border:1px solid #fecaca;
-  border-radius:6px; background:#fef2f2; color:#991b1b; font-size:13px;
+  margin:0 0 14px; padding:8px 10px; border:1px solid var(--error-border);
+  border-radius:6px; background:var(--error-bg); color:var(--error-fg); font-size:13px;
 }
 .tree ul{list-style:none; margin:0; padding:0}
 .tree .children{margin-left:12px; border-left:1px solid var(--line); padding-left:8px}
-.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:#374151; font-size:14px; overflow-wrap:anywhere; user-select:none}
+.tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:var(--fg-secondary); font-size:14px; overflow-wrap:anywhere; user-select:none}
 .tree-label{color:var(--muted); font-weight:600}
-.tree a:hover{background:#eef0f3; text-decoration:none}
-.tree a.active{background:#e7efff; color:var(--accent); font-weight:600}
-.tree a.selected{background:#dbeafe; box-shadow:inset 2px 0 0 var(--accent)}
+.tree a:hover{background:var(--surface-hover); text-decoration:none}
+.tree a.active{background:var(--active-bg); color:var(--accent); font-weight:600}
+.tree a.selected{background:var(--selected-bg); box-shadow:inset 2px 0 0 var(--accent)}
 .tree a[draggable="true"]{cursor:grab}
 .tree a.drag-source{opacity:.55}
 .tree a.drop-target-active,.root-drop.drop-target-active{
-  outline:2px solid #93c5fd; outline-offset:1px; background:#e7efff;
+  outline:2px solid var(--focus-ring); outline-offset:1px; background:var(--active-bg);
 }
 .tree-toggle{
   flex:0 0 auto; width:18px; height:24px; margin:0; padding:0; border:0;
@@ -1169,6 +1523,7 @@ a:hover{text-decoration:underline}
 .tree-toggle:hover{color:var(--fg)}
 .tree-toggle-spacer{flex:0 0 auto; width:18px}
 .tree-folder-icon{flex:0 0 auto; width:14px; height:14px; margin-right:2px; color:var(--muted)}
+.tree-page-dot{flex:0 0 auto; width:14px; height:14px; margin-right:2px; color:var(--muted); opacity:.55}
 .tree li.collapsed > .children{display:none}
 .tree-row{position:relative; display:flex; align-items:center}
 .tree-row>a{
@@ -1181,30 +1536,30 @@ a:hover{text-decoration:underline}
   display:flex; align-items:center; justify-content:flex-end;
   height:29px; padding:0 6px 0 24px; border-radius:6px;
   color:var(--muted); font-size:14px; line-height:1;
-  background:linear-gradient(to right, rgba(247,248,250,0) 0, var(--sidebar) 18px);
+  background:linear-gradient(to right, var(--sidebar-fade) 0, var(--sidebar) 18px);
 }
 .tree-menu summary::-webkit-details-marker{display:none}
 .tree-row:hover .tree-menu summary,.tree-row:focus-within .tree-menu summary,.tree-menu[open] summary{
   opacity:1; pointer-events:auto;
 }
 .tree-row:hover .tree-menu summary,.tree-row:focus-within .tree-menu summary{
-  background:linear-gradient(to right, rgba(238,240,243,0) 0, #eef0f3 18px);
+  background:linear-gradient(to right, var(--surface-hover-fade) 0, var(--surface-hover) 18px);
 }
 .tree-row:has(>a.active) .tree-menu summary{
-  background:linear-gradient(to right, rgba(231,239,255,0) 0, #e7efff 18px);
+  background:linear-gradient(to right, var(--active-fade) 0, var(--active-bg) 18px);
 }
 .tree-menu-pop{
   position:absolute; right:0; top:100%; z-index:10; min-width:150px;
-  background:#fff; border:1px solid var(--line); border-radius:6px;
-  box-shadow:0 2px 8px rgba(0,0,0,.08); padding:4px; display:flex; flex-direction:column;
+  background:var(--surface); border:1px solid var(--line); border-radius:6px;
+  box-shadow:var(--shadow-sm); padding:4px; display:flex; flex-direction:column;
 }
 .tree-menu-pop form{margin:0}
 .tree-menu-pop a,.tree-menu-pop button{
   display:block; width:100%; text-align:left; border:0; background:transparent;
-  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  padding:6px 8px; border-radius:4px; color:var(--fg-secondary); font-size:13px; font-weight:600;
   cursor:pointer; font-family:inherit;
 }
-.tree-menu-pop a:hover,.tree-menu-pop button:hover{background:#eef0f3; text-decoration:none}
+.tree-menu-pop a:hover,.tree-menu-pop button:hover{background:var(--surface-hover); text-decoration:none}
 .content{flex:1; padding:32px 40px; max-width:calc(var(--maxw) + 80px); width:100%}
 .crumbs{color:var(--muted); font-size:13px; margin-bottom:18px}
 .crumbs .sep{color:var(--line); margin:0 2px}
@@ -1212,7 +1567,7 @@ a:hover{text-decoration:underline}
 .page-head h1{font-size:30px; line-height:1.2; margin:0 0 8px}
 .meta{margin:0 0 24px}
 .tags{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
-.tag{background:#eef0f3; color:#374151; font-size:12px; padding:2px 8px; border-radius:999px}
+.tag{background:var(--surface-hover); color:var(--fg-secondary); font-size:12px; padding:2px 8px; border-radius:999px}
 .updated{color:var(--muted); font-size:12px}
 .tags + .updated{margin-top:8px}
 .actions{display:flex; gap:8px; flex:0 0 auto; align-items:center; flex-wrap:wrap}
@@ -1222,11 +1577,21 @@ a:hover{text-decoration:underline}
 .session-user{color:var(--muted); font-size:13px}
 .session-corner{position:fixed; top:12px; right:16px; z-index:50;
   display:flex; align-items:center; gap:8px}
+.theme-toggle{
+  display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:34px; height:34px; padding:0; border:1px solid var(--line); border-radius:6px;
+  background:var(--surface); color:var(--fg-secondary); cursor:pointer;
+}
+.theme-toggle:hover{background:var(--surface-hover-2); color:var(--fg)}
+.theme-toggle .theme-icon{display:block}
+.theme-toggle .icon-moon{display:none}
+:root[data-theme="dark"] .theme-toggle .icon-sun{display:none}
+:root[data-theme="dark"] .theme-toggle .icon-moon{display:block}
 .help-dialog{
   width:min(520px,92vw); border:1px solid var(--line); border-radius:10px;
-  padding:0; color:var(--fg); box-shadow:0 8px 30px rgba(0,0,0,.18);
+  padding:0; color:var(--fg); background:var(--surface); box-shadow:var(--shadow-lg);
 }
-.help-dialog::backdrop{background:rgba(15,23,42,.35)}
+.help-dialog::backdrop{background:var(--backdrop)}
 .help-head{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   margin:0; padding:16px 20px; border-bottom:1px solid var(--line);
@@ -1240,10 +1605,10 @@ a:hover{text-decoration:underline}
 .help-section{padding:16px 20px 0}
 .help-section:last-child{padding-bottom:20px}
 .help-section h3{font-size:14px; margin:0 0 8px}
-.help-section p{margin:0; color:#374151; font-size:14px; line-height:1.6}
+.help-section p{margin:0; color:var(--fg-secondary); font-size:14px; line-height:1.6}
 .help-keys{display:grid; grid-template-columns:auto 1fr; gap:8px 16px; margin:0}
 .help-keys dt{display:flex; align-items:center; gap:4px}
-.help-keys dd{margin:0; color:#374151; font-size:14px}
+.help-keys dd{margin:0; color:var(--fg-secondary); font-size:14px}
 .help-keys kbd{
   display:inline-block; border:1px solid var(--line); border-bottom-width:2px;
   border-radius:5px; background:var(--code-bg); padding:1px 6px;
@@ -1256,11 +1621,18 @@ a:hover{text-decoration:underline}
   cursor:pointer;
 }
 .button:hover{text-decoration:none}
-.button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
-.button.secondary{background:#fff; color:#374151}
-.button.secondary:hover{background:#f7f8fa}
-.button.danger{background:#fff; border-color:#fecaca; color:#991b1b}
-.button.danger:hover{background:#fef2f2}
+.button.primary{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
+.button.secondary{background:var(--surface); color:var(--fg-secondary)}
+.button.secondary:hover{background:var(--surface-hover-2)}
+.button.danger{background:var(--surface); border-color:var(--error-border); color:var(--error-fg)}
+.button.danger:hover{background:var(--error-bg)}
+/* Transient feedback after a "Copy link" action. */
+.button.copied{background:var(--success-bg); border-color:var(--success-border); color:var(--success-fg)}
+.button.copy-failed{background:var(--error-bg); border-color:var(--error-border); color:var(--error-fg)}
+.tree-menu-pop button.copied{color:var(--success-fg)}
+.tree-menu-pop button.copy-failed{color:var(--error-fg)}
+.tree a.copied{background:var(--success-bg); color:var(--success-fg)}
+.tree a.copy-failed{background:var(--error-bg); color:var(--error-fg)}
 .prose{max-width:var(--maxw)}
 .prose h1,.prose h2,.prose h3{line-height:1.25; margin-top:1.6em}
 .prose h2{font-size:22px; border-bottom:1px solid var(--line); padding-bottom:.2em}
@@ -1279,33 +1651,71 @@ a:hover{text-decoration:underline}
 .prose th,.prose td{border:1px solid var(--line); padding:6px 10px; text-align:left}
 .prose img{max-width:100%}
 .wikilink{border-bottom:1px dotted var(--accent)}
+/* Diff / history viewer */
+.button.disabled{color:var(--muted); background:var(--surface); cursor:default; opacity:.55}
+.button.disabled:hover{background:var(--surface)}
+.diff-title{font-weight:400; color:var(--muted)}
+.revbar{
+  display:flex; flex-wrap:wrap; align-items:center; gap:12px; justify-content:space-between;
+  padding:10px 14px; margin:0 0 16px; border:1px solid var(--line); border-radius:8px;
+  background:var(--sidebar);
+}
+.revbar-meta{display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0}
+.revbar-nav{display:flex; gap:8px; flex:0 0 auto}
+.diff-pos{font-weight:700}
+.diff-date{color:var(--muted); font-variant-numeric:tabular-nums}
+.diff-subject{
+  color:var(--muted); font-size:13px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.badge{
+  display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; font-weight:700;
+  border:1px solid transparent;
+}
+.badge-web{color:var(--badge-web-fg); background:var(--badge-web-bg); border-color:var(--badge-web-border)}
+.badge-mcp{color:var(--badge-mcp-fg); background:var(--badge-mcp-bg); border-color:var(--badge-mcp-border)}
+.diffview{
+  max-width:var(--maxw); white-space:pre-wrap; word-wrap:break-word;
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow:auto;
+  font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.diffview ins.diff-add{
+  text-decoration:none; color:var(--diff-add-fg); background:var(--diff-add-bg);
+  border-radius:3px; padding:0 1px;
+}
+.diffview del.diff-del{
+  text-decoration:line-through; color:var(--diff-del-fg); background:var(--diff-del-bg);
+  border-radius:3px; padding:0 1px;
+}
+.diff-sep{display:block; color:var(--muted); text-align:center; user-select:none; margin:.4em 0}
 .editor-content{max-width:none}
 .editor{max-width:1100px}
 .editor-label{display:block; font-size:13px; font-weight:700; margin-bottom:8px}
 .editor textarea{
   display:block; width:100%; min-height:62vh; resize:vertical;
   border:1px solid var(--line); border-radius:8px; padding:14px 16px;
-  color:var(--fg); background:#fff;
+  color:var(--fg); background:var(--surface);
   font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
-.editor textarea:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.editor textarea:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
 .slug-row{display:flex; align-items:center; gap:6px; margin-bottom:6px}
 .slug-prefix{color:var(--muted); font:13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .slug-row input{
   flex:1; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
-  color:var(--fg); background:#fff;
+  color:var(--fg); background:var(--surface);
   font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
-.slug-row input:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.slug-row input:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
 .slug-hint{color:var(--muted); font-size:12px; margin:0 0 16px}
 .form-actions{display:flex; gap:8px; align-items:center; margin-top:12px}
 .notice{
   max-width:1100px; margin:0 0 16px; border:1px solid var(--line);
   border-radius:8px; padding:10px 12px; font-size:14px;
 }
-.notice.error{border-color:#fecaca; background:#fef2f2; color:#991b1b}
-.notice.success{border-color:#bbf7d0; background:#f0fdf4; color:#166534}
-.notice.warning,.notice.archived{border-color:#fde68a; background:#fffbeb; color:#92400e}
+.notice.error{border-color:var(--error-border); background:var(--error-bg); color:var(--error-fg)}
+.notice.success{border-color:var(--success-border); background:var(--success-bg); color:var(--success-fg)}
+.notice.warning,.notice.archived{border-color:var(--warning-border); background:var(--warning-bg); color:var(--warning-fg)}
 .path-label{color:var(--muted); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .login-page{
   min-height:100vh; align-items:center; justify-content:center; padding:24px;
@@ -1313,7 +1723,7 @@ a:hover{text-decoration:underline}
 }
 .login-panel{
   width:100%; max-width:360px; border:1px solid var(--line); border-radius:8px;
-  background:#fff; padding:24px;
+  background:var(--surface); padding:24px;
 }
 .login-panel h1{font-size:24px; line-height:1.2; margin:0 0 4px}
 .login-subtitle{color:var(--muted); margin:0 0 20px}
@@ -1321,18 +1731,19 @@ a:hover{text-decoration:underline}
 .login-form label{font-size:13px; font-weight:700}
 .login-form input{
   width:100%; border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+  color:var(--fg); background:var(--surface);
   font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
-.login-form input:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.login-form input:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
 .login-form button{margin-top:8px}
 .login-panel .notice{max-width:none; margin-bottom:16px}
 /* compact highlight.js theme (github-ish) */
-.hljs-comment,.hljs-quote{color:#6a737d}
-.hljs-keyword,.hljs-selector-tag,.hljs-literal{color:#d73a49}
-.hljs-string,.hljs-doctag,.hljs-regexp{color:#032f62}
-.hljs-number,.hljs-built_in{color:#005cc5}
-.hljs-title,.hljs-section,.hljs-name{color:#6f42c1}
-.hljs-attr,.hljs-attribute,.hljs-variable{color:#e36209}
+.hljs-comment,.hljs-quote{color:var(--hl-comment)}
+.hljs-keyword,.hljs-selector-tag,.hljs-literal{color:var(--hl-keyword)}
+.hljs-string,.hljs-doctag,.hljs-regexp{color:var(--hl-string)}
+.hljs-number,.hljs-built_in{color:var(--hl-number)}
+.hljs-title,.hljs-section,.hljs-name{color:var(--hl-title)}
+.hljs-attr,.hljs-attribute,.hljs-variable{color:var(--hl-attr)}
 /* space switcher in the sidebar */
 .space-switcher{margin:0 0 16px}
 .space-current{display:block; font-weight:700; font-size:15px; color:var(--fg)}
@@ -1346,9 +1757,9 @@ a:hover{text-decoration:underline}
 .space-card-wrap{position:relative; display:flex}
 .space-card{
   flex:1; display:flex; flex-direction:column; gap:6px; padding:18px 18px 20px;
-  border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--fg);
+  border:1px solid var(--line); border-radius:10px; background:var(--surface); color:var(--fg);
 }
-.space-card:hover{text-decoration:none; border-color:#93c5fd; box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.space-card:hover{text-decoration:none; border-color:var(--focus-ring); box-shadow:var(--shadow-card)}
 .space-icon{font-size:26px; line-height:1}
 .space-card-title{font-weight:700; font-size:16px}
 .space-summary{margin:0; color:var(--muted); font-size:13px; line-height:1.5}
@@ -1359,41 +1770,42 @@ a:hover{text-decoration:underline}
   list-style:none; cursor:pointer; user-select:none;
   display:flex; align-items:center; justify-content:center;
   width:28px; height:28px; border-radius:6px; opacity:0; transition:opacity .1s ease;
-  border:1px solid var(--line); background:#fff; color:var(--muted); font-size:16px; line-height:1;
+  border:1px solid var(--line); background:var(--surface); color:var(--muted); font-size:16px; line-height:1;
 }
 .space-menu>summary::-webkit-details-marker{display:none}
 .space-menu>summary::marker{content:""}
 .space-card-wrap:hover .space-menu>summary,.space-menu[open]>summary{opacity:1}
-.space-menu>summary:hover{background:#f7f8fa; color:var(--fg)}
+.space-menu>summary:hover{background:var(--surface-hover-2); color:var(--fg)}
 .space-menu-pop{
   position:absolute; right:0; top:32px; z-index:10; min-width:190px;
-  background:#fff; border:1px solid var(--line); border-radius:6px;
-  box-shadow:0 2px 8px rgba(0,0,0,.12); padding:6px; display:flex; flex-direction:column; gap:4px;
+  background:var(--surface); border:1px solid var(--line); border-radius:6px;
+  box-shadow:var(--shadow-md); padding:6px; display:flex; flex-direction:column; gap:4px;
 }
 .space-menu-pop form{margin:0}
 .space-menu-pop>form:not(.menu-name-form)>button,.space-menu-pop>a{
   display:block; width:100%; text-align:left; border:0; background:transparent;
-  padding:6px 8px; border-radius:4px; color:#374151; font-size:13px; font-weight:600;
+  padding:6px 8px; border-radius:4px; color:var(--fg-secondary); font-size:13px; font-weight:600;
   cursor:pointer; font-family:inherit;
 }
 .space-menu-pop>form:not(.menu-name-form)>button:hover,.space-menu-pop>a:hover{
-  background:#eef0f3; text-decoration:none;
+  background:var(--surface-hover); text-decoration:none;
 }
-.space-menu-pop>a{color:#991b1b}
+.space-menu-pop>a{color:var(--error-fg)}
 .space-menu-pop .menu-name-form{flex-direction:row; align-items:center; gap:4px}
 .space-menu-pop .menu-name-form input[type=text]{flex:1; min-width:0}
 .space-menu-pop .menu-name-form button{
-  flex:0 0 auto; border:1px solid var(--line); border-radius:4px; background:#fff;
-  padding:5px 8px; color:#374151; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;
+  flex:0 0 auto; border:1px solid var(--line); border-radius:4px; background:var(--surface);
+  padding:5px 8px; color:var(--fg-secondary); font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;
 }
-.space-menu-pop .menu-name-form button:hover{background:#f7f8fa}
+.space-menu-pop .menu-name-form button:hover{background:var(--surface-hover-2)}
 .space-confirm .confirm-actions{margin-top:12px}
 .new-space-form{display:flex; gap:8px; margin-top:28px}
 .new-space-form input{
   flex:1; max-width:360px; border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+  color:var(--fg); background:var(--surface);
   font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
-.new-space-form input:focus{outline:2px solid #bfdbfe; border-color:#93c5fd}
+.new-space-form input:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
 @media(max-width:780px){
   body{flex-direction:column}
   .sidebar{width:auto; flex:none; height:auto; position:static; border-right:none;

@@ -18,10 +18,12 @@ import {
   type PageNode,
 } from "./content.js";
 import { makeGit } from "./git.js";
+import { parseWordDiff } from "./diff.js";
 import { createRenderer } from "./markdown.js";
 import {
   archiveLayout,
   deleteLayout,
+  diffLayout,
   editLayout,
   escapeHtml,
   folderLayout,
@@ -481,6 +483,54 @@ async function renderEditPage(
     username: AUTH_USERNAME,
   });
   return { status: options.error ? 400 : 200, html };
+}
+
+async function renderDiffPage(
+  slug: string,
+  revIndex: number
+): Promise<{ status: number; html: string }> {
+  const [spaces, titles, page] = await Promise.all([
+    content.spaces(),
+    content.titleIndex(),
+    content.load(slug),
+  ]);
+
+  if (!page) {
+    return {
+      status: 404,
+      html: notFound(SITE_TITLE, slug.replace(/^\/+/, ""), spaces, AUTH_USERNAME),
+    };
+  }
+
+  const spaceKey = content.spaceKeyOf(page.slug);
+  const tree = await content.spaceTree(spaceKey);
+
+  const commits = await git.fileCommits(page.fsPath);
+  // Clamp the requested revision into range; 0 is the latest edit.
+  const clamped = commits.length
+    ? Math.min(Math.max(revIndex, 0), commits.length - 1)
+    : 0;
+  const commit = commits[clamped];
+  const lines = commit
+    ? parseWordDiff(await git.showWordDiff(page.fsPath, commit.sha, commit.pathAtCommit))
+    : [];
+
+  const html = diffLayout({
+    siteTitle: SITE_TITLE,
+    spaces,
+    spaceKey,
+    tree,
+    activeSlug: page.slug,
+    titles,
+    title: page.data.title,
+    commitCount: commits.length,
+    revIndex: clamped,
+    revDate: commit?.date ?? null,
+    revSubject: commit?.subject ?? null,
+    lines,
+    username: AUTH_USERNAME,
+  });
+  return { status: 200, html };
 }
 
 async function renderDeletePage(slug: string): Promise<{ status: number; html: string }> {
@@ -1166,6 +1216,18 @@ app.get("/_download/*", async (req, reply) => {
     )
     .type("text/markdown; charset=utf-8")
     .send(page.raw);
+});
+
+// Word-level diff of a page's edit history; ?rev=N steps back (0 = latest edit).
+app.get("/_diff/*", async (req, reply) => {
+  const slug = (req.params as { "*": string })["*"] ?? "";
+  // A folder is a pure container — there is no prose to diff.
+  if (await slugIsFolder(slug)) return reply.redirect(pagePath(slug), 303);
+  const revRaw = queryString(req.query, "rev");
+  const parsed = revRaw === null ? 0 : Number.parseInt(revRaw, 10);
+  const revIndex = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  const { status, html } = await renderDiffPage(slug, revIndex);
+  return reply.code(status).type("text/html").send(html);
 });
 
 // Any page by slug (supports nested paths).
