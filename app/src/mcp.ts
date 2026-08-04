@@ -8,6 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { Content, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
+import { syncFromEnv } from "./sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,7 +22,10 @@ const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
 const VERSION = "0.1.0";
 
 const content = new Content(KB_DIR);
-const git = makeGit(KB_DIR);
+// Multi-machine sync, off unless KB_SYNC is set. This process writes to the same
+// repos as the web server, so it hooks the same commit callback.
+const sync = syncFromEnv(KB_DIR);
+const git = makeGit(KB_DIR, sync ? (repoRoot) => sync.notifyCommit(repoRoot) : undefined);
 
 interface ListedPage {
   slug: string;
@@ -812,6 +816,11 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`flux-kb MCP server running on stdio; KB_DIR=${KB_DIR}`);
+  // Pull *after* connecting, never before: MCP clients enforce a startup timeout
+  // (10s by default per flux/install-mcp-on-new-machine.md), and blocking that on
+  // a network round-trip could stop the server coming up at all. A slightly stale
+  // first tool call is the cheaper failure.
+  void sync?.pullAll();
 }
 
 main().catch((err: unknown) => {

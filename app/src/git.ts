@@ -58,7 +58,7 @@ function parseFileCommits(stdout: string): CommitMeta[] {
  * place. Both the web server and the MCP server use these so every write is an
  * audited commit in the correct per-space repo.
  */
-export function makeGit(kbDir: string) {
+export function makeGit(kbDir: string, onCommit?: (repoRoot: string) => void) {
   /** Path of fsPath relative to the KB root (forward slashes). Throws if outside the KB. */
   function kbRelPath(fsPath: string): string {
     const relPath = path.relative(kbDir, fsPath);
@@ -164,7 +164,13 @@ export function makeGit(kbDir: string) {
     let lastSha: string | null = null;
     for (const [repoRoot, rels] of groupByRepo(fsPaths)) {
       const sha = await commitInRepo(repoRoot, rels, message, mode);
-      if (sha) lastSha = sha;
+      if (sha) {
+        lastSha = sha;
+        // Every KB write from either process funnels through here, so this is the
+        // one place multi-machine sync needs to hook. A callback rather than a
+        // direct import keeps git.ts free of any dependency on sync.ts.
+        onCommit?.(repoRoot);
+      }
     }
     return lastSha;
   }

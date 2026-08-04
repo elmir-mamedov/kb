@@ -18,6 +18,7 @@ import {
   type PageNode,
 } from "./content.js";
 import { makeGit } from "./git.js";
+import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
 import { createRenderer } from "./markdown.js";
 import {
@@ -73,7 +74,10 @@ const SESSION_COOKIE = "kb_session";
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 
 const content = new Content(KB_DIR);
-const git = makeGit(KB_DIR);
+// Multi-machine sync, off unless KB_SYNC is set. Every auto-commit re-arms a
+// debounced push; failures never reach the request that triggered them.
+const sync = syncFromEnv(KB_DIR);
+const git = makeGit(KB_DIR, sync ? (repoRoot) => sync.notifyCommit(repoRoot) : undefined);
 const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
 
 function loadEnvFile(filePath: string): void {
@@ -1236,6 +1240,21 @@ app.get("/*", async (req, reply) => {
   const { status, html } = await renderPage(slug);
   return reply.code(status).type("text/html").send(html);
 });
+
+if (sync) {
+  // Pick up whatever the other machine pushed before serving a single stale page.
+  await sync.pullAll();
+  sync.startPeriodicPull(envNumber("KB_SYNC_INTERVAL_MS", 0));
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      // Give the debounced push for the last edit a chance to land before exit.
+      void sync.flush().finally(() => {
+        sync.stop();
+        process.exit(0);
+      });
+    });
+  }
+}
 
 try {
   await app.listen({ host: HOST, port: PORT });
