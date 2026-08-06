@@ -361,3 +361,20 @@ test("tree rows open with exactly one marker glyph, so carets and dots share a c
     assert.match(row, /^<div class="tree-row">(<button type="button" class="tree-toggle"|<span class="tree-toggle-spacer"|<svg class="tree-page-dot")/);
   }
 });
+
+test("copy link: a toast is created up front and rises from below on copy", () => {
+  const html = layout(pageView());
+  // Built on init, not on first use, so the aria-live region pre-exists its message.
+  assert.match(html, /createElement\("div"\)/);
+  assert.match(html, /toast\.setAttribute\("aria-live", "polite"\)/);
+  assert.match(html, /"Link copied"/);
+  assert.match(html, /"Copy failed"/);
+  // Class flip is deferred a frame so the offscreen start position gets painted.
+  assert.match(html, /requestAnimationFrame\(\(\) => toast\.classList\.add\("is-visible"\)\)/);
+  // Travels up from below the bottom edge, and fades in place under reduced motion.
+  assert.match(html, /\.toast\{[\s\S]*?transform:translate\(-50%,calc\(100% \+ 24px\)\)/);
+  assert.match(html, /\.toast\.is-visible\{opacity:1; transform:translate\(-50%,0\)\}/);
+  assert.match(html, /prefers-reduced-motion:reduce\)\{[\s\S]*?\.toast\{transform:translate\(-50%,0\)/);
+  // The toast carries the wording now, so the button no longer swaps its label.
+  assert.doesNotMatch(html, /copyLabel/);
+});

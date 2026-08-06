@@ -981,6 +981,11 @@ const EDIT_SHORTCUT_SCRIPT = `
  * Clipboard access degrades gracefully: it prefers the async Clipboard API and
  * falls back to a hidden-textarea `execCommand("copy")` for non-secure origins
  * (the default LAN host is plain HTTP, where `navigator.clipboard` is absent).
+ *
+ * Every entry point confirms the same two ways: the control that was used tints
+ * green or red, and a toast rises from the bottom of the window for a couple of
+ * seconds. The toast is what covers the keyboard shortcut, whose target control
+ * may be scrolled out of view or missing altogether.
  */
 const COPY_LINK_SCRIPT = `
 (() => {
@@ -1010,19 +1015,41 @@ const COPY_LINK_SCRIPT = `
     }
     return Promise.resolve(fallbackCopy(text));
   }
+  // One toast, built up front rather than on first use: an aria-live region that
+  // is inserted and filled in the same tick is unreliably announced, and having
+  // it already laid out is what lets the first toast slide rather than appear.
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  document.body.appendChild(toast);
+  let toastTimer = 0;
+
+  function showToast(ok) {
+    toast.textContent = ok ? "Link copied" : "Copy failed";
+    toast.classList.toggle("is-error", !ok);
+    window.clearTimeout(toastTimer);
+    // Flip the class on the next frame so the browser has painted the offscreen
+    // starting position and transitions into view instead of jumping.
+    window.requestAnimationFrame(() => toast.classList.add("is-visible"));
+    toastTimer = window.setTimeout(() => {
+      toast.classList.remove("is-visible");
+    }, 2200);
+  }
+
+  // Tint the control that was clicked. The toast carries the wording, so this no
+  // longer swaps the label — two "Copied" messages at once just read as noise.
   function flash(el, ok) {
     if (!el) return;
-    const swap = el.hasAttribute("data-copy-slug");
-    if (swap) {
-      if (el.dataset.copyLabel === undefined) el.dataset.copyLabel = el.textContent;
-      el.textContent = ok ? "Copied!" : "Copy failed";
-    }
     el.classList.add(ok ? "copied" : "copy-failed");
     window.clearTimeout(el.__copyTimer);
     el.__copyTimer = window.setTimeout(() => {
-      if (swap && el.dataset.copyLabel !== undefined) el.textContent = el.dataset.copyLabel;
       el.classList.remove("copied", "copy-failed");
     }, 1200);
+  }
+  function confirmCopy(el, ok) {
+    flash(el, ok);
+    showToast(ok);
   }
   document.addEventListener("click", (event) => {
     const target = event.target;
@@ -1030,7 +1057,7 @@ const COPY_LINK_SCRIPT = `
     if (!btn) return;
     event.preventDefault();
     const slug = btn.getAttribute("data-copy-slug") || "";
-    copyText(slug).then((ok) => flash(btn, ok));
+    copyText(slug).then((ok) => confirmCopy(btn, ok));
   });
   document.addEventListener("keydown", (event) => {
     if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return;
@@ -1044,7 +1071,9 @@ const COPY_LINK_SCRIPT = `
       : null;
     if (!slug) return;
     event.preventDefault();
-    copyText(slug).then((ok) => flash(pageBtn || active, ok));
+    // The shortcut can fire on views where the flashed control is offscreen or
+    // absent entirely; the toast is what makes it confirmable there.
+    copyText(slug).then((ok) => confirmCopy(pageBtn || active, ok));
   });
 })();
 `;
@@ -1976,13 +2005,34 @@ body.dragging-page .space-current{
 .button.secondary:hover{background:var(--surface-hover-2)}
 .button.danger{background:var(--surface); border-color:var(--error-border); color:var(--error-fg)}
 .button.danger:hover{background:var(--error-bg)}
-/* Transient feedback after a "Copy link" action. */
+/* Transient feedback after a "Copy link" action: the clicked control tints, and
+   the toast below carries the wording. */
 .button.copied{background:var(--success-bg); border-color:var(--success-border); color:var(--success-fg)}
 .button.copy-failed{background:var(--error-bg); border-color:var(--error-border); color:var(--error-fg)}
 .tree-menu-pop button.copied{color:var(--success-fg)}
 .tree-menu-pop button.copy-failed{color:var(--error-fg)}
 .tree a.copied{background:var(--success-bg); color:var(--success-fg)}
 .tree a.copy-failed{background:var(--error-bg); color:var(--error-fg)}
+/* Toast: rises from below the bottom edge, holds a couple of seconds, sinks back.
+   Created by COPY_LINK_SCRIPT; the class names stay generic so another action can
+   reuse it. z-index clears .session-corner (50); a <dialog> still wins via the
+   top layer, which is correct — a modal should cover it. */
+.toast{
+  position:fixed; left:50%; bottom:24px; z-index:60;
+  max-width:min(420px,calc(100vw - 32px)); padding:10px 16px;
+  border:1px solid var(--success-border); border-radius:8px;
+  background:var(--success-bg); color:var(--success-fg);
+  font-size:14px; font-weight:600; text-align:center;
+  box-shadow:var(--shadow-md); pointer-events:none;
+  opacity:0; transform:translate(-50%,calc(100% + 24px));
+  transition:transform .28s ease, opacity .28s ease;
+}
+.toast.is-visible{opacity:1; transform:translate(-50%,0)}
+.toast.is-error{border-color:var(--error-border); background:var(--error-bg); color:var(--error-fg)}
+@media(prefers-reduced-motion:reduce){
+  /* No travel when less motion was asked for — fade in place instead. */
+  .toast{transform:translate(-50%,0); transition:opacity .12s ease}
+}
 .prose{max-width:var(--maxw)}
 .prose h1,.prose h2,.prose h3{line-height:1.25; margin-top:1.6em}
 .prose h2{font-size:22px; border-bottom:1px solid var(--line); padding-bottom:.2em}
