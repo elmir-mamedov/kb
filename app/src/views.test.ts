@@ -283,3 +283,51 @@ test("TODO #1: confirmDelete renders a scary confirmation posting to _delete-spa
   // Cancel bails back to the grid.
   assert.match(html, /href="\/">Cancel<\/a>/);
 });
+
+test("search: the in-space sidebar renders a combobox scoped to the space", () => {
+  const html = layout(pageView());
+  assert.match(html, /data-search-space="flux"/);
+  assert.match(html, /role="combobox"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /aria-controls="kb-search-results"/);
+  assert.match(html, /id="kb-search-results"[\s\S]*?role="listbox"/);
+  // The drop strip it replaced is gone.
+  assert.doesNotMatch(html, /Move to space root/);
+  assert.doesNotMatch(html, /class="root-drop"/);
+});
+
+test("search: every in-space layout gets the box, since sidebarHtml carries it", () => {
+  assert.match(folderLayout(folderView()), /data-search-input/);
+});
+
+test("search: views without a space render neither the box nor its script", () => {
+  const html = layout(pageView({ spaceKey: "", activeSlug: "", isArchiveView: true }));
+  assert.doesNotMatch(html, /data-search-space/);
+  assert.doesNotMatch(html, /data-search-input/);
+});
+
+test("search: the shortcut script binds Cmd/Ctrl+K and the Help dialog documents it", () => {
+  const html = layout(pageView());
+  assert.match(html, /key\.toLowerCase\(\) !== "k"/);
+  assert.match(html, /Search this space from the sidebar/);
+});
+
+test("search: highlighting builds <mark> nodes rather than assigning HTML", () => {
+  const html = layout(pageView());
+  // The endpoint sends plain text; the client must never route it through HTML.
+  assert.match(html, /createElement\("mark"\)/);
+  assert.doesNotMatch(html, /innerHTML/);
+});
+
+test("search: the space name takes over as the move-to-space-root drop target", () => {
+  const html = layout(pageView());
+  assert.match(html, /class="space-current" href="\/flux" data-drop-slug="flux"/);
+  // MOVE_SCRIPT discovers it through the selector it already uses.
+  assert.match(html, /querySelectorAll\("\[data-drop-slug\], \[data-drop-root\]"\)/);
+});
+
+test("search: the move-error banner survives, along with the code that writes to it", () => {
+  const html = layout(pageView());
+  assert.match(html, /class="move-error" data-move-error hidden/);
+  assert.match(html, /querySelector\("\[data-move-error\]"\)/);
+});

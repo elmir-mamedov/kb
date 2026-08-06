@@ -1233,6 +1233,11 @@ function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
 }
 
+/** Depth-first flatten of a navigation tree, parents before their children. */
+export function flatten(nodes: PageNode[]): PageNode[] {
+  return nodes.flatMap((node) => [node, ...flatten(node.children)]);
+}
+
 /**
  * A page is a "folder" (pure container) when its frontmatter declares
  * `type: folder`. Single source of truth, shared by the content, server, and

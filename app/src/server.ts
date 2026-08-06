@@ -21,6 +21,7 @@ import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
 import { createRenderer } from "./markdown.js";
+import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
   archiveLayout,
   deleteLayout,
@@ -48,6 +49,13 @@ const KB_DIR = path.resolve(
 const HOST = process.env.HOST ?? "0.0.0.0"; // bind for LAN access
 const PORT = Number(process.env.PORT ?? 4000);
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
+
+// Sidebar search. A single character matches nearly every page, so the client is
+// told not to ask and the server refuses anyway; the cap bounds the payload the
+// dropdown can be handed.
+const SEARCH_MIN_QUERY = 2;
+const SEARCH_LIMIT_DEFAULT = 8;
+const SEARCH_LIMIT_MAX = 20;
 
 // Site icons bundled with the app, served from the site root so the
 // <link rel="icon"> tags and the browser's automatic /favicon.ico lookup
@@ -942,6 +950,73 @@ app.post("/_move", async (req, reply) => {
     slug: result.moves[0].newSlug,
     url: pagePath(result.moves[0].newSlug),
     ...(failureNote ? { error: failureNote } : {}),
+  });
+});
+
+/**
+ * Type-ahead search for the sidebar box, scoped to one space. Read-only, so GET —
+ * which also makes it inspectable with curl and lets the client cancel a
+ * superseded request cleanly.
+ *
+ * Excerpts are returned as plain text plus the query's tokens; the client wraps
+ * the matches in <mark> itself. No HTML crosses the wire, so page bodies — the
+ * least trustworthy strings in the system — can never inject markup here.
+ */
+app.get("/_search", async (req, reply) => {
+  // Results are derived from authenticated content and change on every edit, so
+  // no browser or proxy may keep a copy. Fastify sets no cache headers of its
+  // own, which would otherwise leave a bare 200 GET heuristically cacheable.
+  reply.header("cache-control", "no-store");
+
+  const query = (queryString(req.query, "q") ?? "").trim();
+  if (query.length < SEARCH_MIN_QUERY) {
+    return reply.code(400).send({ ok: false, error: "Query is too short." });
+  }
+
+  const spaceKey = content.spaceKeyOf(queryString(req.query, "space") ?? "");
+  if (!spaceKey) {
+    return reply.code(400).send({ ok: false, error: "Missing space." });
+  }
+  // Membership doubles as the traversal guard: spaceKeyOf("../etc") yields "..",
+  // which is not a space, so it 404s rather than escaping the KB.
+  const space = (await content.spaces("all")).find((s) => s.key === spaceKey);
+  if (!space) {
+    return reply.code(404).send({ ok: false, error: `No space named "${spaceKey}".` });
+  }
+
+  const rawLimit = queryString(req.query, "limit");
+  const parsedLimit = rawLimit === null ? NaN : Number.parseInt(rawLimit, 10);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(Math.max(parsedLimit, 1), SEARCH_LIMIT_MAX)
+    : SEARCH_LIMIT_DEFAULT;
+
+  let hits: SearchHit[];
+  try {
+    hits = await searchPages(content, query, {
+      space: spaceKey,
+      limit,
+      // A "live" tree drops an archived space's own node, and with it every page
+      // beneath — scoping to one would silently return nothing. Its pages are
+      // still browsable, so widen the filter for that case alone.
+      filter: space.archived ? "all" : "live",
+    });
+  } catch (err) {
+    return reply.code(500).send({ ok: false, error: errorMessage(err) });
+  }
+
+  return reply.send({
+    ok: true,
+    query,
+    space: spaceKey,
+    tokens: searchTokens(query),
+    results: hits.map((hit) => ({
+      slug: hit.slug,
+      title: hit.title,
+      url: pagePath(hit.slug),
+      // Middle segments only: the space is implied and the leaf is the title.
+      crumb: hit.slug.split("/").slice(1, -1).join(" / "),
+      excerpt: hit.excerpt,
+    })),
   });
 });
 

@@ -249,18 +249,28 @@ function sidebarHtml(
       ? `${current.icon} ${current.title}`
       : current.title
     : spaceKey;
+  // The space name doubles as the "move to space root" drop target, taking over
+  // from the dashed strip that this sidebar's search box replaced. It carries
+  // `data-drop-slug` (not `data-drop-root`, which would mean the KB root, outside
+  // any space) so MOVE_SCRIPT picks it up with no change and the semantics stay
+  // exactly what the old strip had: targetKind "page", targetSlug = the space.
+  const rootDropAttrs = isArchiveView
+    ? ""
+    : ` data-drop-slug="${escapeHtml(spaceKey)}" title="Drop a page here to move it to the space root"`;
   const switcher = `<div class="space-switcher">
-    <a class="space-current" href="${slugPath(spaceKey)}">${escapeHtml(spaceLabel)}</a>
+    <a class="space-current" href="${slugPath(spaceKey)}"${rootDropAttrs}>${escapeHtml(spaceLabel)}</a>
     <a class="space-all" href="/">↩ All spaces</a>
   </div>`;
-  const spaceRootDrop = isArchiveView
+  // MOVE_SCRIPT still writes every drag failure into [data-move-error]; it used
+  // to sit beside the removed drop strip, so it keeps its slot above the tree.
+  const moveError = isArchiveView
     ? ""
-    : `<div class="root-drop" data-drop-slug="${escapeHtml(spaceKey)}">Move to space root</div>
-  <div class="move-error" data-move-error hidden></div>`;
+    : `<div class="move-error" data-move-error hidden></div>`;
 
   return `<aside class="sidebar">
   <a class="brand" href="/">${escapeHtml(siteTitle)}</a>
   ${switcher}
+  ${sidebarSearch(spaceKey)}
   <details class="create-menu">
     <summary class="sidebar-link">Create</summary>
     <div class="create-menu-pop">
@@ -276,12 +286,38 @@ function sidebarHtml(
     </div>
   </details>
   <a class="sidebar-link${archiveCls}" href="/_archive">Archive</a>
-  ${spaceRootDrop}
+  ${moveError}
   <nav class="tree">${renderTree(tree, activeSlug, {
     dragEnabled: !isArchiveView,
     collapsible: !isArchiveView,
   })}</nav>
-</aside>`;
+</aside>
+<script>${SEARCH_SCRIPT}</script>`;
+}
+
+/**
+ * Sidebar search: an ARIA combobox scoped to the current space. The input owns
+ * the combobox role; `SEARCH_SCRIPT` fills the listbox with `<a role="option">`
+ * children and tracks the highlighted one through `aria-activedescendant`, so DOM
+ * focus never leaves the field.
+ *
+ * `data-search-space` carries the scope, so the script needs no inline data.
+ * With JavaScript off this is an inert field — there is no server-rendered
+ * results page to fall back to, so it deliberately has no <form> and no action.
+ */
+function sidebarSearch(spaceKey: string): string {
+  return `<div class="sidebar-search" data-search data-search-space="${escapeHtml(spaceKey)}">
+    <input id="kb-search-input" class="sidebar-search-input" type="search" data-search-input
+      placeholder="Search this space" aria-label="Search this space"
+      autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+      role="combobox" aria-expanded="false" aria-autocomplete="list"
+      aria-haspopup="listbox" aria-controls="kb-search-results" />
+    <div class="sidebar-search-panel" data-search-panel hidden>
+      <div id="kb-search-results" class="sidebar-search-list" role="listbox"
+        aria-label="Search results" data-search-list></div>
+      <div class="sidebar-search-status" data-search-status role="status" aria-live="polite" hidden></div>
+    </div>
+  </div>`;
 }
 
 function sessionActions(username?: string | null): string {
@@ -884,6 +920,8 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   <section class="help-section">
     <h3>Keyboard shortcuts</h3>
     <dl class="help-keys">
+      <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>K</kbd></dt>
+      <dd>Search this space from the sidebar</dd>
       <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>E</kbd></dt>
       <dd>Edit the page you are viewing</dd>
       <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>S</kbd></dt>
@@ -891,7 +929,7 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
       <dt><kbd>&#8984;</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd></dt>
       <dd>Copy this page's relative link (space/&hellip;/page)</dd>
       <dt><kbd>Esc</kbd></dt>
-      <dd>Close this dialog</dd>
+      <dd>Close the search results or this dialog</dd>
     </dl>
   </section>
 </dialog>`;
@@ -1321,6 +1359,269 @@ const MOVE_SCRIPT = `
 `;
 
 /**
+ * Sidebar search. A debounced GET to /_search fills an ARIA listbox under the
+ * input; ↑/↓ move the highlighted option (via aria-activedescendant, so focus
+ * stays in the field), Enter opens it, Esc dismisses and then clears.
+ * Cmd/Ctrl+K focuses the box from anywhere on the page.
+ *
+ * The endpoint sends plain text plus the query's tokens — never HTML — and every
+ * string reaches the DOM through textContent, so page content cannot inject
+ * markup into the dropdown.
+ */
+const SEARCH_SCRIPT = `
+(() => {
+  const root = document.querySelector("[data-search]");
+  if (!root) return;
+  const input = root.querySelector("[data-search-input]");
+  const panel = root.querySelector("[data-search-panel]");
+  const list = root.querySelector("[data-search-list]");
+  const status = root.querySelector("[data-search-status]");
+  if (!input || !panel || !list || !status) return;
+
+  const space = root.getAttribute("data-search-space") || "";
+  const DEBOUNCE_MS = 180;
+  const MIN_LENGTH = 2;
+  const LIMIT = 8;
+
+  let timer = 0;
+  let controller = null;
+  let items = [];
+  let activeIndex = -1;
+  let lastQuery = "";
+  // Backspacing to a query already asked about is the most common wasted round
+  // trip; a plain Map kills it. Cleared wholesale rather than evicted by age —
+  // it only has to survive until the next navigation.
+  const cache = new Map();
+
+  function setStatus(text) {
+    status.textContent = text || "";
+    status.hidden = !text;
+  }
+
+  function open() {
+    panel.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  function clearList() {
+    list.textContent = "";
+    items = [];
+    activeIndex = -1;
+  }
+
+  function close() {
+    panel.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    clearList();
+    setStatus("");
+  }
+
+  function setActive(index) {
+    const previous = items[activeIndex];
+    if (previous) {
+      previous.classList.remove("is-active");
+      previous.setAttribute("aria-selected", "false");
+    }
+    activeIndex = index;
+    const el = items[index];
+    if (!el) {
+      input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    el.classList.add("is-active");
+    el.setAttribute("aria-selected", "true");
+    input.setAttribute("aria-activedescendant", el.id);
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }
+
+  // Wrap each occurrence of a query token in <mark>, longest-token-first at any
+  // given position so "dep" inside "deploy" cannot produce a nested mark. Every
+  // slice goes in as a text node, so nothing here can introduce markup.
+  function highlight(target, text, tokens) {
+    target.textContent = "";
+    const lower = text.toLowerCase();
+    // A handful of code points change length when lowercased (e.g. "İ"), which
+    // would desync every offset below. Fall back to plain text instead.
+    const usable = lower.length === text.length && tokens.length > 0;
+    let cursor = 0;
+    while (usable && cursor < text.length) {
+      let at = -1;
+      let length = 0;
+      for (const token of tokens) {
+        if (!token) continue;
+        const found = lower.indexOf(token, cursor);
+        if (found === -1) continue;
+        if (at === -1 || found < at || (found === at && token.length > length)) {
+          at = found;
+          length = token.length;
+        }
+      }
+      if (at === -1) break;
+      if (at > cursor) target.appendChild(document.createTextNode(text.slice(cursor, at)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(at, at + length);
+      target.appendChild(mark);
+      cursor = at + length;
+    }
+    if (cursor < text.length) target.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+
+  function render(payload, query) {
+    clearList();
+    const results = payload.results || [];
+    const tokens = payload.tokens || [];
+    if (!results.length) {
+      setStatus("No matches for \\"" + query + "\\" in this space.");
+      open();
+      return;
+    }
+    setStatus("");
+    results.forEach((result, index) => {
+      const item = document.createElement("a");
+      item.className = "sidebar-search-item";
+      item.id = "kb-search-opt-" + index;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", "false");
+      item.href = result.url;
+
+      const title = document.createElement("span");
+      title.className = "sidebar-search-title";
+      highlight(title, String(result.title || ""), tokens);
+      item.appendChild(title);
+
+      if (result.crumb) {
+        const crumb = document.createElement("span");
+        crumb.className = "sidebar-search-crumb";
+        crumb.textContent = result.crumb;
+        item.appendChild(crumb);
+      }
+
+      const excerpt = String(result.excerpt || "");
+      if (excerpt) {
+        const body = document.createElement("span");
+        body.className = "sidebar-search-excerpt";
+        highlight(body, excerpt, tokens);
+        item.appendChild(body);
+      }
+
+      item.addEventListener("mousemove", () => setActive(index));
+      list.appendChild(item);
+      items.push(item);
+    });
+    open();
+    setActive(0);
+  }
+
+  async function run(query) {
+    if (controller) controller.abort();
+    const cached = cache.get(query);
+    if (cached) {
+      render(cached, query);
+      return;
+    }
+
+    controller = new AbortController();
+    setStatus("Searching…");
+    open();
+    const url = "/_search?q=" + encodeURIComponent(query) +
+      "&space=" + encodeURIComponent(space) + "&limit=" + LIMIT;
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { accept: "application/json" },
+      });
+      // An expired session 303s to the sign-in page, which fetch follows — so a
+      // stale tab would get HTML with response.ok true. Reload so the user lands
+      // on the login form instead of an empty dropdown.
+      if (response.redirected) {
+        window.location.reload();
+        return;
+      }
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        clearList();
+        setStatus(result && result.error ? result.error : "Search failed.");
+        return;
+      }
+      // abort() does not reliably beat a response already in flight, so stale
+      // answers are dropped by query as well.
+      if (query !== lastQuery) return;
+      if (cache.size > 50) cache.clear();
+      cache.set(query, result);
+      render(result, query);
+    } catch (error) {
+      if (error && error.name === "AbortError") return;
+      clearList();
+      setStatus("Search failed.");
+    }
+  }
+
+  input.addEventListener("input", () => {
+    const query = input.value.trim();
+    lastQuery = query;
+    window.clearTimeout(timer);
+    if (query.length < MIN_LENGTH) {
+      if (controller) controller.abort();
+      close();
+      return;
+    }
+    timer = window.setTimeout(() => run(query), DEBOUNCE_MS);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      // First press dismisses the results, second empties the box.
+      if (panel.hidden) {
+        input.value = "";
+        lastQuery = "";
+        input.blur();
+      } else {
+        close();
+      }
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (panel.hidden || !items.length) return;
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActive((activeIndex + step + items.length) % items.length);
+      return;
+    }
+    if (event.key === "Enter") {
+      const el = items[activeIndex];
+      if (panel.hidden || !el) return;
+      event.preventDefault();
+      window.location.href = el.href;
+    }
+  });
+
+  // Keep focus in the input on mousedown, so the focusout teardown below cannot
+  // remove the row between mousedown and click and swallow the navigation.
+  // Safari does not focus clicked links, which is where this bites hardest.
+  list.addEventListener("mousedown", (event) => event.preventDefault());
+
+  document.addEventListener("click", (event) => {
+    if (!root.contains(event.target)) close();
+  });
+  root.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!root.contains(document.activeElement)) close();
+    }, 0);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== "k") return;
+    event.preventDefault();
+    input.focus();
+    input.select();
+  });
+})();
+`;
+
+/**
  * Space ⋯ menus on the home grid: keep only one open, and close the open one
  * when the user clicks elsewhere. The <details> toggle works without JS; this
  * just adds the same dismiss behavior the sidebar page menus have.
@@ -1493,10 +1794,46 @@ a:hover{text-decoration:underline}
   background:var(--surface); border:1px solid var(--line); border-radius:6px;
   box-shadow:var(--shadow-sm);
 }
-.root-drop{
-  margin:0 0 14px; padding:5px 6px; border:1px dashed var(--line);
-  border-radius:6px; color:var(--muted); font-size:13px; font-weight:600;
+/* Sidebar search: combobox + result panel, scoped to the current space. */
+.sidebar-search{position:relative; margin:0 0 14px}
+.sidebar-search-input{
+  width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+  background:var(--surface); color:var(--fg); font-size:14px; font-family:inherit;
 }
+.sidebar-search-input::placeholder{color:var(--muted)}
+.sidebar-search-input:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
+/* Drop WebKit's native clear button so Esc is the one dismiss gesture. */
+.sidebar-search-input::-webkit-search-cancel-button{-webkit-appearance:none; appearance:none}
+/* The sidebar is the scroll container, so this panel is clipped to it; the input
+   sits near the top of a 100vh column, which leaves room for the max-height. */
+.sidebar-search-panel{
+  position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:20;
+  max-height:min(60vh,420px); overflow:auto; padding:4px;
+  background:var(--surface); border:1px solid var(--line); border-radius:6px;
+  box-shadow:var(--shadow-md);
+}
+.sidebar-search-item{
+  display:block; padding:6px 8px; border-radius:4px; color:var(--fg-secondary);
+  overflow-wrap:anywhere; cursor:pointer;
+}
+.sidebar-search-item:hover{background:var(--surface-hover); text-decoration:none}
+.sidebar-search-item.is-active{background:var(--active-bg)}
+.sidebar-search-item.is-active .sidebar-search-title{color:var(--accent)}
+.sidebar-search-title{display:block; font-size:14px; font-weight:600; color:var(--fg)}
+.sidebar-search-crumb{display:block; font-size:11px; color:var(--muted); margin-top:1px}
+.sidebar-search-excerpt{
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
+  font-size:12px; color:var(--muted); margin-top:3px; line-height:1.45;
+}
+/* The browser default (black on bright yellow) is unreadable on a dark surface,
+   so the highlight rides the accent tokens and flips with the theme. */
+.sidebar-search-item mark{
+  background:var(--active-bg); color:var(--accent); font-weight:600;
+  border-radius:2px; padding:0 1px;
+}
+.sidebar-search-item.is-active mark{background:var(--selected-bg)}
+.sidebar-search-status{padding:6px 8px; font-size:12px; color:var(--muted)}
+.sidebar-search-status[hidden]{display:none}
 .move-error{
   margin:0 0 14px; padding:8px 10px; border:1px solid var(--error-border);
   border-radius:6px; background:var(--error-bg); color:var(--error-fg); font-size:13px;
@@ -1510,8 +1847,14 @@ a:hover{text-decoration:underline}
 .tree a.selected{background:var(--selected-bg); box-shadow:inset 2px 0 0 var(--accent)}
 .tree a[draggable="true"]{cursor:grab}
 .tree a.drag-source{opacity:.55}
-.tree a.drop-target-active,.root-drop.drop-target-active{
+.tree a.drop-target-active,.space-current.drop-target-active{
   outline:2px solid var(--focus-ring); outline-offset:1px; background:var(--active-bg);
+}
+/* MOVE_SCRIPT flags the body while a page is in flight. Hinting the space name
+   then recovers the affordance the always-visible dashed drop strip provided,
+   without spending sidebar space on it the rest of the time. */
+body.dragging-page .space-current{
+  outline:1px dashed var(--line); outline-offset:2px; border-radius:4px;
 }
 .tree-toggle{
   flex:0 0 auto; width:18px; height:24px; margin:0; padding:0; border:0;
@@ -1810,6 +2153,8 @@ a:hover{text-decoration:underline}
   body{flex-direction:column}
   .sidebar{width:auto; flex:none; height:auto; position:static; border-right:none;
     border-bottom:1px solid var(--line)}
+  /* iOS Safari zooms the viewport when focusing an input under 16px. */
+  .sidebar-search-input{font-size:16px}
   .content{padding:20px}
   .page-head{display:block}
   .actions{margin-bottom:16px}

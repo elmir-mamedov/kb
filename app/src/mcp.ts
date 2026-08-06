@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { Content, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
+import { Content, flatten, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
+import { searchPages } from "./search.js";
 import { syncFromEnv } from "./sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,28 +104,6 @@ function listedPage(node: PageNode): ListedPage {
   };
 }
 
-function flatten(nodes: PageNode[]): PageNode[] {
-  return nodes.flatMap((node) => [node, ...flatten(node.children)]);
-}
-
-/** Map over items with bounded concurrency, preserving input order. */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 function asJsonText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
@@ -156,55 +135,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function normalizeText(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function scorePage(query: string, page: Awaited<ReturnType<Content["load"]>>): number {
-  if (!page) return 0;
-
-  const normalizedQuery = normalizeText(query);
-  const tokens = normalizedQuery.split(" ").filter(Boolean);
-  const title = normalizeText(page.data.title);
-  const slug = normalizeText(page.slug);
-  const summary = normalizeText(page.data.summary ?? "");
-  const tags = normalizeText((page.data.tags ?? []).join(" "));
-  const body = normalizeText(page.body);
-  const haystack = `${title} ${slug} ${summary} ${tags} ${body}`;
-
-  if (!tokens.every((token) => haystack.includes(token))) return 0;
-
-  let score = 1;
-  for (const token of tokens) {
-    if (title.includes(token)) score += 8;
-    if (slug.includes(token)) score += 5;
-    if (tags.includes(token)) score += 4;
-    if (summary.includes(token)) score += 3;
-    if (body.includes(token)) score += 1;
-  }
-  if (title.includes(normalizedQuery)) score += 12;
-  if (slug.includes(normalizedQuery)) score += 6;
-  if (summary.includes(normalizedQuery)) score += 5;
-  if (body.includes(normalizedQuery)) score += 2;
-  return score;
-}
-
-function excerptFor(query: string, body: string, summary?: string): string {
-  if (summary) return summary;
-
-  const normalizedBody = body.replace(/\s+/g, " ").trim();
-  if (!normalizedBody) return "";
-
-  const firstToken = normalizeText(query).split(" ").find(Boolean);
-  const normalized = normalizeText(normalizedBody);
-  const index = firstToken ? normalized.indexOf(firstToken) : -1;
-  const start = index === -1 ? 0 : Math.max(0, index - 80);
-  const end = Math.min(normalizedBody.length, start + 220);
-  const prefix = start > 0 ? "..." : "";
-  const suffix = end < normalizedBody.length ? "..." : "";
-  return `${prefix}${normalizedBody.slice(start, end)}${suffix}`;
-}
-
 async function listPages(filter: TreeFilter, space?: string): Promise<ListedPage[]> {
   const nodes = space
     ? await content.spaceTree(space, filter)
@@ -212,52 +142,29 @@ async function listPages(filter: TreeFilter, space?: string): Promise<ListedPage
   return nodes.map(listedPage);
 }
 
-async function searchPages(
+/**
+ * `searchPages` reports each hit's absolute `fsPath`; MCP clients want the
+ * KB-relative one, so swap it here and keep the tool's JSON shape unchanged.
+ */
+async function searchMatches(
   query: string,
   filter: TreeFilter,
   limit: number,
   space?: string
 ): Promise<SearchMatch[]> {
-  const nodes = flatten(
-    space ? await content.spaceTree(space, filter) : await content.tree(filter)
-  );
-
-  // Load pages concurrently instead of serially. The tree walk above has
-  // already warmed Content's parse cache, so these resolve to cheap cache hits;
-  // bounded concurrency keeps the cold path from opening too many files at once.
-  const pages = await mapWithConcurrency(nodes, 32, async (node) => {
-    try {
-      return await content.load(node.slug);
-    } catch {
-      return null; // skip pages with unreadable or invalid frontmatter
-    }
-  });
-
-  const matches: SearchMatch[] = [];
-  for (const page of pages) {
-    if (!page) continue;
-    // Folders are pure containers with no body to match — skip them.
-    if (isFolderPage(page.data)) continue;
-
-    const score = scorePage(query, page);
-    if (score === 0) continue;
-
-    matches.push({
-      slug: page.slug,
-      id: page.data.id,
-      title: page.data.title,
-      path: kbRelPath(page.fsPath),
-      archived: page.data.archived === true,
-      tags: page.data.tags ?? [],
-      summary: page.data.summary,
-      excerpt: excerptFor(query, page.body, page.data.summary),
-      score,
-    });
-  }
-
-  return matches
-    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
-    .slice(0, limit);
+  const hits = await searchPages(content, query, { filter, limit, space });
+  // Spelled out rather than spread so the emitted key order stays put.
+  return hits.map((hit) => ({
+    slug: hit.slug,
+    id: hit.id,
+    title: hit.title,
+    path: kbRelPath(hit.fsPath),
+    archived: hit.archived,
+    tags: hit.tags,
+    summary: hit.summary,
+    excerpt: hit.excerpt,
+    score: hit.score,
+  }));
 }
 
 const filterSchema = z.enum(["live", "archived", "all"]);
@@ -415,7 +322,7 @@ server.registerTool(
       filter: selectedFilter,
       limit: selectedLimit,
       space: space ?? null,
-      matches: await searchPages(query, selectedFilter, selectedLimit, space),
+      matches: await searchMatches(query, selectedFilter, selectedLimit, space),
     });
   }
 );
