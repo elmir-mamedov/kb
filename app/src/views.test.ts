@@ -331,3 +331,33 @@ test("search: the move-error banner survives, along with the code that writes to
   assert.match(html, /class="move-error" data-move-error hidden/);
   assert.match(html, /querySelector\("\[data-move-error\]"\)/);
 });
+
+test("tree rows open with exactly one marker glyph, so carets and dots share a column", () => {
+  const html = layout(
+    pageView({
+      tree: [
+        // A page with children: gets the caret.
+        node({
+          slug: "flux/handbook",
+          title: "Handbook",
+          isSection: true,
+          modifiedMs: 4,
+          children: [node({ slug: "flux/handbook/intro", title: "Intro", modifiedMs: 3 })],
+        }),
+        // A leaf page: gets the dot, in the caret's column.
+        node({ slug: "flux/notes", title: "Notes", modifiedMs: 2 }),
+        // A folder: spacer or caret in that column, then its own icon.
+        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true, modifiedMs: 1 }),
+      ],
+    })
+  );
+
+  const rows = html.match(/<div class="tree-row">[\s\S]*?<a /g) ?? [];
+  assert.equal(rows.length, 4, "one row per node, children included");
+  for (const row of rows) {
+    const markers = [...row.matchAll(/class="(tree-toggle|tree-toggle-spacer|tree-page-dot)"/g)];
+    // Exactly one, and first — anything else would offset the glyph sideways.
+    assert.equal(markers.length, 1, `expected a single marker, got ${markers.length} in ${row}`);
+    assert.match(row, /^<div class="tree-row">(<button type="button" class="tree-toggle"|<span class="tree-toggle-spacer"|<svg class="tree-page-dot")/);
+  }
+});

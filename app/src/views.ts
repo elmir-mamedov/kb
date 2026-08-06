@@ -27,23 +27,27 @@ function renderTree(
           ? `<span class="tree-label">${escapeHtml(n.title)}</span>`
           : `<a href="${slugPath(n.slug)}"${cls}${dragAttrs}>${escapeHtml(n.title)}</a>`;
       const hasChildren = n.children.length > 0;
-      // Expand/collapse control for nodes with children; a spacer keeps leaf
-      // labels aligned with their siblings' carets.
-      const toggle = options.collapsible
-        ? hasChildren
-          ? `<button type="button" class="tree-toggle" aria-label="Toggle subpages" aria-expanded="true"></button>`
-          : `<span class="tree-toggle-spacer"></span>`
+      // Every row opens with one 18px marker column holding exactly one glyph, so
+      // an expandable row's caret lands on the same vertical as a sibling leaf's
+      // dot instead of a column to its left. Expanding or collapsing swaps the
+      // caret's rotation, never its slot, so nothing shifts sideways.
+      const toggle = options.collapsible && hasChildren
+        ? `<button type="button" class="tree-toggle" aria-label="Toggle subpages" aria-expanded="true"></button>`
         : "";
+      // A content page with no caret of its own fills the marker column with a
+      // dot, so it reads unambiguously as a standalone page. Folders get a spacer
+      // there instead — their own icon follows in the next column.
+      const marker = toggle
+        ? toggle
+        : n.isFolder
+          ? `<span class="tree-toggle-spacer"></span>`
+          : PAGE_DOT;
       // Only real folders (pure containers) carry the folder icon, so it reads
       // as "container" — distinct from an ordinary content page that merely
       // happens to have child pages.
       const folderIcon = n.isFolder ? FOLDER_ICON : "";
-      // A leaf content page — not a folder and with no child pages/folders —
-      // gets a dot so it reads unambiguously as a standalone page. A page that
-      // has children already shows the expand caret, so it needs no dot.
-      const pageDot = !n.isFolder && !hasChildren ? PAGE_DOT : "";
       const row = options.dragEnabled
-        ? `<div class="tree-row">${toggle}${folderIcon}${pageDot}${label}${treeMenu(n)}</div>`
+        ? `<div class="tree-row">${marker}${folderIcon}${label}${treeMenu(n)}</div>`
         : label;
       const children = hasChildren
         ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
@@ -1866,7 +1870,10 @@ body.dragging-page .space-current{
 .tree-toggle:hover{color:var(--fg)}
 .tree-toggle-spacer{flex:0 0 auto; width:18px}
 .tree-folder-icon{flex:0 0 auto; width:14px; height:14px; margin-right:2px; color:var(--muted)}
-.tree-page-dot{flex:0 0 auto; width:14px; height:14px; margin-right:2px; color:var(--muted); opacity:.55}
+/* Shares the marker column with .tree-toggle: the 2px side margins centre the
+   14px glyph inside the same 18px box, so the dot and the caret sit on one
+   vertical axis. Widths here and on .tree-toggle must stay in step. */
+.tree-page-dot{flex:0 0 auto; width:14px; height:14px; margin:0 2px; color:var(--muted); opacity:.55}
 .tree li.collapsed > .children{display:none}
 .tree-row{position:relative; display:flex; align-items:center}
 .tree-row>a{
