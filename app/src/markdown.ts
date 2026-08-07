@@ -1,4 +1,6 @@
 import MarkdownIt from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
+import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
 import hljs from "highlight.js";
 
 /**
@@ -37,6 +39,145 @@ export function resolveWikiTarget(
   // it to the repo root.
   const spaceKey = segments[0];
   return spaceKey ? `${spaceKey}/${target}` : target;
+}
+
+/** A trailing `=WxH` size spec inside an image's parens: `=600x`, `=600x400`, `=x400`. */
+const IMAGE_SIZE_RE = /^=(\d*)x(\d*)/;
+
+/** markdown-it's own whitespace test, inlined to avoid a deep internal import. */
+function isSpaceCode(code: number): boolean {
+  return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
+}
+
+/**
+ * markdown-it's `image` inline rule, extended to accept an optional `=WxH`
+ * size spec before the closing paren:
+ *
+ *     ![alt](_assets/diagram.png =600x)      → width 600, height unset
+ *     ![alt](_assets/diagram.png =600x400)   → both set
+ *     ![alt](_assets/diagram.png "Title" =600x)
+ *
+ * The size must be separated from the destination by whitespace, otherwise
+ * markdown-it reads it as part of the URL. Tokens are ordinary `image` tokens,
+ * so the `_assets` src rewrite and the default renderer still apply unchanged.
+ */
+function imageWithSize(state: StateInline, silent: boolean): boolean {
+  let code: number;
+  let label: string | undefined;
+  let pos: number;
+  let res: { ok: boolean; pos: number; str: string };
+  let title: string;
+  let start: number;
+  let href = "";
+  let width = "";
+  let height = "";
+  const oldPos = state.pos;
+  const max = state.posMax;
+
+  if (state.src.charCodeAt(state.pos) !== 0x21 /* ! */) return false;
+  if (state.src.charCodeAt(state.pos + 1) !== 0x5b /* [ */) return false;
+
+  const labelStart = state.pos + 2;
+  const labelEnd = state.md.helpers.parseLinkLabel(state, state.pos + 1, false);
+  if (labelEnd < 0) return false; // no closing ']', not an image
+
+  pos = labelEnd + 1;
+  if (pos < max && state.src.charCodeAt(pos) === 0x28 /* ( */) {
+    // Inline form: ![alt](  <href>  "title"  =WxH  )
+    pos++;
+    for (; pos < max; pos++) {
+      if (!isSpaceCode(state.src.charCodeAt(pos))) break;
+    }
+    if (pos >= max) return false;
+
+    start = pos;
+    res = state.md.helpers.parseLinkDestination(state.src, pos, state.posMax);
+    if (res.ok) {
+      href = state.md.normalizeLink(res.str);
+      if (state.md.validateLink(href)) pos = res.pos;
+      else href = "";
+    }
+
+    start = pos;
+    for (; pos < max; pos++) {
+      if (!isSpaceCode(state.src.charCodeAt(pos))) break;
+    }
+
+    res = state.md.helpers.parseLinkTitle(state.src, pos, state.posMax);
+    if (pos < max && start !== pos && res.ok) {
+      title = res.str;
+      pos = res.pos;
+      for (; pos < max; pos++) {
+        if (!isSpaceCode(state.src.charCodeAt(pos))) break;
+      }
+    } else {
+      title = "";
+    }
+
+    // The one addition to markdown-it's rule: an optional `=WxH` spec. A spec
+    // with neither dimension (`=x`) is not treated as a size, so the closing
+    // paren check below rejects the image rather than emitting empty attrs.
+    const sizeMatch = IMAGE_SIZE_RE.exec(state.src.slice(pos, state.posMax));
+    if (sizeMatch && (sizeMatch[1] || sizeMatch[2])) {
+      width = sizeMatch[1];
+      height = sizeMatch[2];
+      pos += sizeMatch[0].length;
+      for (; pos < max; pos++) {
+        if (!isSpaceCode(state.src.charCodeAt(pos))) break;
+      }
+    }
+
+    if (pos >= max || state.src.charCodeAt(pos) !== 0x29 /* ) */) {
+      state.pos = oldPos;
+      return false;
+    }
+    pos++;
+  } else {
+    // Reference form: ![alt][ref] — unchanged from markdown-it, no size spec.
+    if (typeof state.env.references === "undefined") return false;
+
+    if (pos < max && state.src.charCodeAt(pos) === 0x5b /* [ */) {
+      start = pos + 1;
+      pos = state.md.helpers.parseLinkLabel(state, pos);
+      if (pos >= 0) label = state.src.slice(start, pos++);
+      else pos = labelEnd + 1;
+    } else {
+      pos = labelEnd + 1;
+    }
+
+    if (!label) label = state.src.slice(labelStart, labelEnd);
+
+    const ref = state.env.references[label.toUpperCase().replace(/\s+/g, " ")];
+    if (!ref) {
+      state.pos = oldPos;
+      return false;
+    }
+    href = ref.href;
+    title = ref.title;
+  }
+
+  if (!silent) {
+    const content = state.src.slice(labelStart, labelEnd);
+    const tokens: Token[] = [];
+    state.md.inline.parse(content, state.md, state.env, tokens);
+
+    const token = state.push("image", "img", 0);
+    const attrs: [string, string][] = [
+      ["src", href],
+      ["alt", ""],
+    ];
+    token.attrs = attrs;
+    token.children = tokens;
+    token.content = content;
+
+    if (title) attrs.push(["title", title]);
+    if (width) attrs.push(["width", width]);
+    if (height) attrs.push(["height", height]);
+  }
+
+  state.pos = pos;
+  state.posMax = max;
+  return true;
 }
 
 /**
@@ -117,6 +258,10 @@ export function createRenderer(
     }
     return defaultFence(tokens, idx, options, env, self);
   };
+
+  // Accept an optional `=WxH` size spec on images (`![alt](pic.png =600x)`),
+  // the only way to size an image given `html: false` above.
+  md.inline.ruler.at("image", imageWithSize);
 
   // Rewrite relative `_assets/…` references (images and attachment links such
   // as PDFs) to the current page's space, e.g. `_assets/diagram.png` on a `flux`

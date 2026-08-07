@@ -69,3 +69,40 @@ test("slug-based [[wiki-links]] still resolve when no id resolver is given", () 
   assert.match(html, /href="\/flux\/other"/);
   assert.match(html, />Other</);
 });
+
+test("images render without size attributes by default", () => {
+  const html = render("![Diagram](_assets/pic.png)");
+  assert.match(html, /<img src="\/flux\/_assets\/pic\.png" alt="Diagram">/);
+});
+
+test("`=WxH` sets width only when height is omitted", () => {
+  const html = render("![Diagram](_assets/pic.png =600x)");
+  assert.match(html, /src="\/flux\/_assets\/pic\.png"/); // asset rewrite still applies
+  assert.match(html, /width="600"/);
+  assert.doesNotMatch(html, /height=/);
+  assert.doesNotMatch(html, /=600x/); // spec consumed, not left in the URL
+});
+
+test("`=WxH` sets both dimensions, and height alone works", () => {
+  assert.match(render("![D](_assets/pic.png =600x400)"), /width="600" height="400"/);
+  const heightOnly = render("![D](_assets/pic.png =x400)");
+  assert.match(heightOnly, /height="400"/);
+  assert.doesNotMatch(heightOnly, /width=/);
+});
+
+test("a size spec coexists with a title", () => {
+  const html = render('![D](_assets/pic.png "A title" =600x)');
+  assert.match(html, /title="A title"/);
+  assert.match(html, /width="600"/);
+});
+
+test("a size spec with no dimensions is not an image", () => {
+  const html = render("![D](_assets/pic.png =x)");
+  assert.doesNotMatch(html, /<img/);
+});
+
+test("external image URLs accept a size and are not asset-rewritten", () => {
+  const html = render("![D](https://example.com/pic.png =320x)");
+  assert.match(html, /src="https:\/\/example\.com\/pic\.png"/);
+  assert.match(html, /width="320"/);
+});

@@ -2049,7 +2049,8 @@ body.dragging-page .space-current{
   border-left:3px solid var(--line)}
 .prose table{border-collapse:collapse; width:100%}
 .prose th,.prose td{border:1px solid var(--line); padding:6px 10px; text-align:left}
-.prose img{max-width:100%}
+/* height:auto keeps a width-sized image undistorted when max-width shrinks it. */
+.prose img{max-width:100%; height:auto}
 .wikilink{border-bottom:1px dotted var(--accent)}
 /* Diff / history viewer */
 .button.disabled{color:var(--muted); background:var(--surface); cursor:default; opacity:.55}
