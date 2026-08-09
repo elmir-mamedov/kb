@@ -52,6 +52,8 @@ interface ScannedNote {
 
 const OPEN_RE = /^ {0,3}<!--[ \t]*flux:note\b(.*)$/;
 const CLOSE = "-->";
+/** An opening or closing code fence: three or more backticks or tildes. */
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 /**
  * A short note id: 40 random bits as a fixed 8-char lowercase base36 string.
@@ -111,8 +113,25 @@ function scanNotes(body: string): ScannedNote[] {
 
   const lines = body.split("\n");
   const found: ScannedNote[] = [];
+  let fence = "";
 
   for (let i = 0; i < lines.length; i += 1) {
+    // Note syntax inside a code fence is a documented example, not a note —
+    // this page is one. The renderer never sees those lines (the fence rule
+    // consumes them), so the scanner must skip them too or the two disagree.
+    const rail = FENCE_RE.exec(lines[i]);
+    if (fence) {
+      if (rail && rail[1][0] === fence[0] && rail[1].length >= fence.length && !rail[2].trim()) {
+        fence = "";
+      }
+      continue;
+    }
+    // A backtick fence's info string may not itself contain a backtick.
+    if (rail && !(rail[1][0] === "`" && rail[2].includes("`"))) {
+      fence = rail[1];
+      continue;
+    }
+
     const open = OPEN_RE.exec(lines[i]);
     if (!open) continue;
 

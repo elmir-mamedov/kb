@@ -271,3 +271,41 @@ test("resolving a stacked note closes the gap instead of widening it", () => {
   // ...and resolving the last one gets all the way back to the original prose.
   assert.equal(removeNote(afterFirst, "bbb"), original);
 });
+
+test("note syntax inside a code fence is an example, not a note", () => {
+  const body = [
+    "Here is what a note looks like:",
+    "",
+    "```markdown",
+    "<!-- flux:note id=demo kind=task",
+    "> restart the workers manually",
+    "",
+    "Rewrite this paragraph.",
+    "-->",
+    "After the image is pushed...",
+    "```",
+    "",
+    "<!-- flux:note id=real kind=task",
+    "This one is real.",
+    "-->",
+    "Annotated paragraph.",
+  ].join("\n");
+
+  // The renderer never sees fenced lines, so the scanner must not either —
+  // otherwise a page documenting the syntax sprouts a phantom note.
+  assert.deepEqual(
+    parseNotes(body).map((n) => n.id),
+    ["real"]
+  );
+  // ...and search must not gut the code block while stripping the real note.
+  assert.match(stripNotes(body), /<!-- flux:note id=demo/);
+  assert.doesNotMatch(stripNotes(body), /This one is real/);
+});
+
+test("tilde fences and fences with a longer closing rail are both respected", () => {
+  assert.deepEqual(parseNotes("~~~\n<!-- flux:note id=a kind=task\nx\n-->\n~~~"), []);
+  // A closing rail may be longer than the opening one, but not shorter.
+  assert.deepEqual(parseNotes("```\n<!-- flux:note id=a kind=task\nx\n-->\n`````"), []);
+  // An indented code block is already excluded by the four-space rule.
+  assert.deepEqual(parseNotes("    <!-- flux:note id=a kind=task\n    x\n    -->"), []);
+});
