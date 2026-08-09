@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRenderer } from "./markdown.js";
+import { createRenderer, sourceBlocks } from "./markdown.js";
 
 /** Render Markdown with a renderer scoped to a representative page slug. */
 const render = (src: string) =>
@@ -8,8 +8,11 @@ const render = (src: string) =>
 
 test("```mermaid fences render as a Mermaid container, not a code block", () => {
   const html = render("```mermaid\nflowchart LR\n  a --> b\n```\n");
-  // Emitted as a container the client-side Mermaid library picks up.
-  assert.match(html, /<pre class="mermaid">/);
+  // Emitted as a container the client-side Mermaid library picks up. Matched on
+  // the class alone because every top-level block also carries a note anchor —
+  // and `class="mermaid"` is the exact substring layout() looks for to decide
+  // whether to ship the Mermaid loader.
+  assert.match(html, /<pre[^>]* class="mermaid">/);
   assert.match(html, /flowchart LR/);
   // Not a highlighted code block.
   assert.doesNotMatch(html, /language-mermaid/);
@@ -105,4 +108,104 @@ test("external image URLs accept a size and are not asset-rewritten", () => {
   const html = render("![D](https://example.com/pic.png =320x)");
   assert.match(html, /src="https:\/\/example\.com\/pic\.png"/);
   assert.match(html, /width="320"/);
+});
+
+/** A `flux:note` comment as it appears on disk, with the given text. */
+const noteComment = (id: string, text: string, quote?: string) =>
+  ["<!-- flux:note id=" + id + " kind=task", ...(quote ? ["> " + quote, ""] : []), text, "-->"].join(
+    "\n"
+  );
+
+test("a flux:note comment renders nothing, not escaped text", () => {
+  const html = render(noteComment("aaa", "Fix this.", "the phrase") + "\nAnnotated paragraph.\n");
+  assert.doesNotMatch(html, /flux:note/);
+  assert.doesNotMatch(html, /&lt;!--/);
+  assert.doesNotMatch(html, /Fix this\./);
+  assert.match(html, /Annotated paragraph\./);
+});
+
+test("the block below a note carries its id, and every top-level block is anchored", () => {
+  const html = render("# Title\n\n" + noteComment("aaa", "Fix this.") + "\nAnnotated paragraph.\n");
+  assert.match(html, /<h1 data-src-line="0" data-src-hash="[0-9a-f]{8}">Title<\/h1>/);
+  assert.match(html, /<p data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-flux-notes="aaa">/);
+});
+
+test("two notes stacked on one block are both listed on it", () => {
+  const html = render(
+    noteComment("aaa", "First.") + "\n" + noteComment("bbb", "Second.") + "\nParagraph.\n"
+  );
+  assert.match(html, /data-flux-notes="aaa bbb"/);
+});
+
+test("a note whose text contains --- is not parsed as a setext heading", () => {
+  // `lheading` looks for an underline before consulting terminator rules, so
+  // this only works because the note rule is registered first in the chain.
+  const html = render(noteComment("aaa", "Before\n---\nAfter") + "\nParagraph.\n");
+  assert.doesNotMatch(html, /<h2/);
+  assert.doesNotMatch(html, /flux:note/);
+  assert.match(html, /<p data-src-line="\d+"[^>]*data-flux-notes="aaa">Paragraph\.<\/p>/);
+});
+
+test("an unterminated note comment renders as text instead of eating the page", () => {
+  const html = render("<!-- flux:note id=aaa kind=task\nnever closed\n\nReal content.\n");
+  assert.match(html, /&lt;!-- flux:note/);
+  assert.match(html, /Real content\./);
+});
+
+test("an ordinary HTML comment still renders escaped, unchanged", () => {
+  const html = render("<!-- just a comment -->\n\nParagraph.\n");
+  assert.match(html, /&lt;!-- just a comment --&gt;/);
+});
+
+test("a note written inside a list annotates the whole list", () => {
+  const html = render("- one\n- two\n\n  " + noteComment("aaa", "Fix.").replace(/\n/g, "\n  ") + "\n");
+  assert.doesNotMatch(html, /flux:note/);
+  assert.match(html, /<ul data-src-line="0"[^>]*data-flux-notes="aaa">/);
+});
+
+test("a note between the items of a tight list does not merge them", () => {
+  const html = render("- one\n\n  " + noteComment("aaa", "Fix.").replace(/\n/g, "\n  ") + "\n\n  two\n");
+  assert.doesNotMatch(html, /onetwo/);
+});
+
+test("code fences carry the anchor on the <pre>, not the inner <code>", () => {
+  const html = render(noteComment("aaa", "Wrong flag.") + "\n```sh\nls -a\n```\n");
+  assert.match(html, /<pre data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-flux-notes="aaa">/);
+  assert.match(html, /<code class="language-sh">/);
+});
+
+test("mermaid containers keep their class alongside the anchor", () => {
+  const html = render("```mermaid\nflowchart LR\n  a --> b\n```\n");
+  assert.match(html, /<pre data-src-line="0" data-src-hash="[0-9a-f]{8}" class="mermaid">/);
+});
+
+test("sourceBlocks reports the same anchors the renderer stamps into the HTML", () => {
+  const body = "# Title\n\nFirst paragraph.\n\n- a\n- b\n\n```sh\nls\n```\n";
+  const html = render(body);
+  for (const block of sourceBlocks(body)) {
+    assert.match(
+      html,
+      new RegExp(`data-src-line="${block.line}" data-src-hash="${block.hash}"`),
+      `no rendered block at line ${block.line} with hash ${block.hash}`
+    );
+  }
+  assert.deepEqual(
+    sourceBlocks(body).map((b) => b.line),
+    [0, 2, 4, 7]
+  );
+});
+
+test("adding a note shifts a block's line but leaves its hash alone", () => {
+  const body = "First paragraph.\n\nSecond paragraph.\n";
+  const annotated = "First paragraph.\n\n" + noteComment("aaa", "Fix.") + "\nSecond paragraph.\n";
+  const before = sourceBlocks(body);
+  const after = sourceBlocks(annotated);
+  assert.notEqual(before[1].line, after[1].line); // the block moved down
+  assert.equal(before[1].hash, after[1].hash); // ...but is still the same block
+});
+
+test("a note nested in a list does not change the list's hash", () => {
+  const plain = "- one\n- two\n";
+  const annotated = "- one\n- two\n\n  " + noteComment("aaa", "Fix.").replace(/\n/g, "\n  ") + "\n";
+  assert.equal(sourceBlocks(plain)[0].hash, sourceBlocks(annotated)[0].hash);
 });

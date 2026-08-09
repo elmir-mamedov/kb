@@ -20,7 +20,15 @@ import {
 import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
-import { createRenderer } from "./markdown.js";
+import { createRenderer, sourceBlocks } from "./markdown.js";
+import {
+  insertNote,
+  newNoteId,
+  normalizeQuote,
+  parseNotes,
+  removeNote,
+  splitFrontmatter,
+} from "./notes.js";
 import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
   archiveLayout,
@@ -408,6 +416,9 @@ async function renderPage(
   const md = createRenderer((s) => titles.get(s), page.slug, (id) => ids.get(id));
   const contentHtml = md.render(page.body);
   const updated = await gitUpdated(page.fsPath);
+  // The renderer stamps each note's id onto the block it belongs to; the client
+  // needs the notes themselves to draw them.
+  const notes = parseNotes(page.body);
 
   const html = layout({
     siteTitle: SITE_TITLE,
@@ -419,6 +430,7 @@ async function renderPage(
     title: page.data.title,
     tags: page.data.tags,
     contentHtml,
+    notes,
     updated,
     isArchived: page.data.archived === true,
     archivedAt: page.data.archivedAt,
@@ -951,6 +963,96 @@ app.post("/_move", async (req, reply) => {
     url: pagePath(result.moves[0].newSlug),
     ...(failureNote ? { error: failureNote } : {}),
   });
+});
+
+/**
+ * The body line a note should be inserted above.
+ *
+ * The reader's browser reports the block it was looking at by line *and*
+ * fingerprint. The line is used when it still names that same block; otherwise
+ * the block is looked up by fingerprint, which survives an edit elsewhere on the
+ * page having shifted it up or down. When neither finds it the block is gone,
+ * and refusing beats landing the note on whatever prose moved into its place.
+ */
+function resolveAnchor(body: string, line: number, hash: string): number | null {
+  if (!hash) return null;
+  const blocks = sourceBlocks(body);
+  const atLine = blocks.find((b) => b.line === line);
+  if (atLine?.hash === hash) return atLine.line;
+  return blocks.find((b) => b.hash === hash)?.line ?? null;
+}
+
+/**
+ * Add or resolve an inline note. Fetch-driven like `/_move`, because the reader
+ * stays on the page rather than navigating away from it.
+ *
+ * Resolving deletes the note outright: git keeps both the note and the edit it
+ * prompted, so there is nothing to gain from leaving a tombstone in the prose.
+ */
+app.post("/_notes/*", async (req, reply) => {
+  const slug = String((req.params as Record<string, string>)["*"] ?? "");
+  const page = await content.loadRaw(slug);
+  if (!page) return reply.code(404).send({ ok: false, error: "Page not found." });
+
+  const { header, body } = splitFrontmatter(page.raw);
+  const relPath = git.kbRelPath(page.fsPath);
+  let nextBody: string;
+  let message: string;
+
+  if (formString(req.body, "op") === "resolve") {
+    const removed = removeNote(body, formString(req.body, "noteId") ?? "");
+    if (removed === null) {
+      return reply
+        .code(409)
+        .send({ ok: false, error: "That note is already gone. Reload the page." });
+    }
+    nextBody = removed;
+    message = `Resolve note on ${relPath} via web`;
+  } else {
+    const text = (formString(req.body, "text") ?? "").trim();
+    if (!text) return reply.code(400).send({ ok: false, error: "Write the note first." });
+
+    const line = resolveAnchor(
+      body,
+      Number(formString(req.body, "line")),
+      formString(req.body, "hash") ?? ""
+    );
+    if (line === null) {
+      return reply
+        .code(409)
+        .send({ ok: false, error: "This page changed. Reload and try again." });
+    }
+
+    const quote = normalizeQuote(formString(req.body, "quote") ?? "");
+    nextBody = insertNote(body, line, {
+      id: newNoteId(),
+      kind: formString(req.body, "kind") === "remark" ? "remark" : "task",
+      // Seconds are plenty for something a person reads as "2h ago".
+      at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      by: AUTH_USERNAME,
+      quote: quote || undefined,
+      text,
+    });
+    message = `Add note to ${relPath} via web`;
+  }
+
+  try {
+    // Through updateRaw, so a note write is held to the same frontmatter
+    // validation and folder rules as any other edit.
+    await content.updateRaw(slug, header + nextBody);
+  } catch (err) {
+    return reply.code(400).send({ ok: false, error: errorMessage(err) });
+  }
+
+  try {
+    await git.commitFiles([page.fsPath], message);
+  } catch (err) {
+    return reply
+      .code(500)
+      .send({ ok: false, error: `Saved, but Git commit failed: ${errorMessage(err)}` });
+  }
+
+  return reply.send({ ok: true });
 });
 
 /**

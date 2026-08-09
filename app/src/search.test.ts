@@ -243,3 +243,26 @@ test("searchPages returns nothing for a blank query or an unknown space", async 
     await kb.cleanup();
   }
 });
+
+test("inline notes are not searchable and never leak into an excerpt", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = await seed(kb.dir);
+    await content.createPage(
+      "docs",
+      "Deploy",
+      "<!-- flux:note id=aaa kind=task\n> the queue\n\nMention zookeeper here.\n-->\nWatch the queue drain."
+    );
+
+    // A word that appears only inside the note must not match the page.
+    assert.deepEqual(await searchPages(content, "zookeeper", { space: "docs" }), []);
+
+    // ...and the excerpt for a real hit shows prose, not comment syntax.
+    const hits = await searchPages(content, "queue", { space: "docs" });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].excerpt, "Watch the queue drain.");
+    assert.doesNotMatch(hits[0].excerpt, /flux:note|-->/);
+  } finally {
+    await kb.cleanup();
+  }
+});

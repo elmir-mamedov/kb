@@ -1,5 +1,6 @@
 import type { PageNode, SpaceInfo } from "./content.js";
 import type { DiffLine } from "./diff.js";
+import type { Note } from "./notes.js";
 
 export function escapeHtml(s: string): string {
   return s
@@ -126,6 +127,8 @@ export interface PageView {
   title: string;
   tags?: string[];
   contentHtml: string;
+  /** Inline notes saved on this page; the renderer has already anchored them. */
+  notes?: Note[];
   updated?: string | null;
   canEdit?: boolean;
   isArchived?: boolean;
@@ -431,6 +434,12 @@ export function layout(v: PageView): string {
   const notice = v.notice
     ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
     : "";
+  // Shipped even when there are no notes yet, because it also carries the slug
+  // the composer posts to — the reader can always start the first one.
+  const notesData =
+    v.canEdit === false || v.isArchiveView || !v.activeSlug
+      ? ""
+      : `<div id="flux-notes" hidden data-slug="${escapeHtml(v.activeSlug)}" data-notes="${escapeHtml(JSON.stringify(v.notes ?? []))}"></div>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -450,8 +459,10 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchi
   ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
 </main>
+${notesData}
 <script>${EDIT_SHORTCUT_SCRIPT}</script>
 <script>${COPY_LINK_SCRIPT}</script>
+${notesData ? `<script>${NOTES_SCRIPT}</script>` : ""}
 ${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
 ${v.contentHtml.includes('class="mermaid"') ? MERMAID_SCRIPT : ""}
 </body>
@@ -1678,6 +1689,479 @@ const SPACE_MENU_SCRIPT = `
 })();
 `;
 
+/**
+ * Inline notes on the rendered page: draw the ones already saved, and let a text
+ * selection become a new one.
+ *
+ * The renderer stamps each top-level block with `data-src-line` / `data-src-hash`
+ * and lists the ids of the notes attached to it in `data-flux-notes`; the notes
+ * themselves arrive as JSON on `#flux-notes`. Everything here is built with
+ * `createElement` and text nodes — never `innerHTML` — because note text comes
+ * from a file a person or an agent can write anything into.
+ *
+ * Note that every `\\s` below is doubled: this is a template literal, so a lone
+ * backslash would be eaten and `/\s+/` would silently become `/s+/`.
+ */
+const NOTES_SCRIPT = `
+(() => {
+  const article = document.querySelector("article.prose");
+  const payload = document.getElementById("flux-notes");
+  if (!article || !payload) return;
+
+  const slug = payload.getAttribute("data-slug") || "";
+  let notes = [];
+  try {
+    notes = JSON.parse(payload.getAttribute("data-notes") || "[]");
+  } catch (err) {
+    notes = [];
+  }
+
+  const byId = new Map(notes.map((note) => [note.id, note]));
+
+  /** Collapse whitespace the same way the server does, so quotes still match. */
+  function normalize(text) {
+    return text.replace(/\\s+/g, " ").trim();
+  }
+
+  function relativeTime(iso) {
+    const then = Date.parse(iso);
+    if (!then) return "";
+    const seconds = Math.max(0, (Date.now() - then) / 1000);
+    const steps = [[60, "s"], [60, "m"], [24, "h"], [7, "d"], [52, "w"]];
+    let value = seconds;
+    let unit = "s";
+    for (const [size, name] of steps) {
+      if (value < size) break;
+      value = value / size;
+      unit = name;
+    }
+    return Math.floor(value) + unit + " ago";
+  }
+
+  // --- painting saved notes ------------------------------------------------
+
+  /**
+   * Wrap a note's quote in <mark>. The quote can straddle <strong>/<a>
+   * boundaries, and no single element can wrap across those, so this indexes
+   * every text node into one collapsed string, finds the quote there, then
+   * splits and wraps each text node the match touches — one <mark> per node.
+   * Returns false when the quote is gone, so the caller can degrade instead of
+   * throwing.
+   */
+  function markQuote(block, quote, id) {
+    const wanted = normalize(quote);
+    if (!wanted) return false;
+
+    // Collect the whole walk before mutating: splitText() inserts siblings the
+    // walker has already passed, which would otherwise be revisited.
+    const nodes = [];
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      // Mermaid re-reads its source from textContent on every theme flip, so
+      // that text has to stay one intact node.
+      if (node.parentElement && node.parentElement.closest("pre.mermaid")) continue;
+      nodes.push(node);
+    }
+
+    // text[i] came from nodes[owner[i]] at character offset[i]. A run of
+    // whitespace collapses onto the single space that starts it, so every
+    // emitted character keeps exactly one source position.
+    let text = "";
+    const owner = [];
+    const offset = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const value = nodes[i].nodeValue;
+      for (let j = 0; j < value.length; j++) {
+        const isSpace = /\\s/.test(value[j]);
+        if (isSpace && (text === "" || text.charCodeAt(text.length - 1) === 32)) continue;
+        text += isSpace ? " " : value[j];
+        owner.push(i);
+        offset.push(j);
+      }
+    }
+
+    const at = text.indexOf(wanted);
+    if (at < 0) return false;
+
+    // Group the matched characters back into one run per text node. Offsets
+    // within a node only increase, so extending the last run is enough.
+    const runs = [];
+    for (let k = at; k < at + wanted.length; k++) {
+      const last = runs.length ? runs[runs.length - 1] : null;
+      if (last && last.node === owner[k]) last.end = offset[k] + 1;
+      else runs.push({ node: owner[k], start: offset[k], end: offset[k] + 1 });
+    }
+
+    let marked = false;
+    for (const run of runs) {
+      const node = nodes[run.node];
+      const length = node.nodeValue.length;
+      if (run.start >= length) continue;
+      const end = Math.min(run.end, length);
+      // Split the head off first, then the tail, leaving exactly the match.
+      const middle = run.start > 0 ? node.splitText(run.start) : node;
+      if (end - run.start < middle.nodeValue.length) middle.splitText(end - run.start);
+      const mark = document.createElement("mark");
+      mark.className = "note-mark";
+      mark.setAttribute("data-note-mark", id);
+      middle.parentNode.insertBefore(mark, middle);
+      mark.appendChild(middle);
+      marked = true;
+    }
+    return marked;
+  }
+
+  /**
+   * Where a block's pin can legally live. A <button> is not valid as a direct
+   * child of <ul>/<ol>/<table>, so it goes in the first item or cell instead —
+   * which changes nothing about where it appears, because the pin positions
+   * against the nearest positioned ancestor and that is still the block.
+   */
+  function pinHost(block) {
+    const tag = block.tagName;
+    if (tag === "UL" || tag === "OL") return block.querySelector("li") || block;
+    if (tag === "TABLE") return block.querySelector("th, td") || block;
+    return block;
+  }
+
+  /** The gutter pin for a block, created on first use. */
+  function pinFor(block) {
+    let pin = block.querySelector(".note-pin");
+    if (pin) return pin;
+    pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "note-pin";
+    pin.setAttribute("data-note-pin", "");
+    const host = pinHost(block);
+    host.insertBefore(pin, host.firstChild);
+    return pin;
+  }
+
+  function paint() {
+    const blocks = article.querySelectorAll("[data-flux-notes]");
+    for (const block of blocks) {
+      const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+      const present = ids.filter((id) => byId.has(id));
+      if (!present.length) continue;
+
+      block.classList.add("has-note");
+      const kinds = present.map((id) => byId.get(id).kind);
+      const pin = pinFor(block);
+      pin.classList.toggle("is-remark", kinds.every((kind) => kind === "remark"));
+      pin.setAttribute("aria-label", present.length + " note" + (present.length === 1 ? "" : "s"));
+      pin.title = present.length === 1 ? "1 note" : present.length + " notes";
+
+      for (const id of present) {
+        const note = byId.get(id);
+        if (note.quote && !markQuote(block, note.quote, id)) note.drifted = true;
+      }
+    }
+  }
+
+  // --- the note popover ----------------------------------------------------
+
+  let popover = null;
+
+  function closePopover() {
+    if (!popover) return;
+    popover.remove();
+    popover = null;
+    const active = article.querySelectorAll(".note-mark.is-active");
+    for (const mark of active) mark.classList.remove("is-active");
+  }
+
+  function noteCard(note) {
+    const card = document.createElement("div");
+    card.className = "note-card";
+
+    const head = document.createElement("div");
+    head.className = "note-card-head";
+    const kind = document.createElement("span");
+    kind.className = "note-kind" + (note.kind === "remark" ? " is-remark" : "");
+    kind.textContent = note.kind === "remark" ? "Remark" : "Task";
+    head.appendChild(kind);
+    const when = document.createElement("span");
+    when.className = "note-when";
+    when.textContent = [relativeTime(note.at), note.by].filter(Boolean).join(" · ");
+    head.appendChild(when);
+    card.appendChild(head);
+
+    // A quote is shown here only when it could not be highlighted in the prose,
+    // where it would otherwise be the one thing pointing at what drifted.
+    if (note.quote && note.drifted) {
+      const quote = document.createElement("div");
+      quote.className = "note-quote";
+      quote.textContent = "\\u201c" + note.quote + "\\u201d";
+      card.appendChild(quote);
+    }
+
+    const body = document.createElement("div");
+    body.className = "note-text";
+    body.textContent = note.text;
+    card.appendChild(body);
+
+    const resolve = document.createElement("button");
+    resolve.type = "button";
+    resolve.className = "button secondary note-resolve";
+    resolve.textContent = "Resolve";
+    resolve.addEventListener("click", () => {
+      resolve.disabled = true;
+      send({ op: "resolve", noteId: note.id }, resolve);
+    });
+    card.appendChild(resolve);
+    return card;
+  }
+
+  function openPopover(anchor, ids) {
+    closePopover();
+    const shown = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (!shown.length) return;
+
+    popover = document.createElement("div");
+    popover.className = "note-popover";
+    popover.setAttribute("role", "dialog");
+    for (const note of shown) popover.appendChild(noteCard(note));
+    document.body.appendChild(popover);
+    place(popover, anchor.getBoundingClientRect());
+  }
+
+  /** Pin a fixed-position panel under a rect, kept inside the viewport. */
+  function place(panel, rect) {
+    const width = panel.offsetWidth;
+    const left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
+    const below = rect.bottom + 8;
+    const fitsBelow = below + panel.offsetHeight < window.innerHeight - 12;
+    panel.style.left = left + "px";
+    panel.style.top = (fitsBelow ? below : Math.max(12, rect.top - panel.offsetHeight - 8)) + "px";
+  }
+
+  // --- writing ---------------------------------------------------------------
+
+  function send(fields, button) {
+    const body = new URLSearchParams(fields);
+    fetch("/_notes/" + slug, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    })
+      .then((response) => {
+        // A session that expired redirects to the login page; reloading lands
+        // the reader there rather than failing silently.
+        if (response.redirected) {
+          window.location.reload();
+          return null;
+        }
+        return response.json().catch(() => ({ ok: false, error: "Could not save the note." }));
+      })
+      .then((result) => {
+        if (!result) return;
+        if (result.ok) window.location.reload();
+        else fail(result.error || "Could not save the note.", button);
+      })
+      .catch(() => fail("Could not reach the server.", button));
+  }
+
+  function fail(message, button) {
+    if (button) button.disabled = false;
+    const toast = document.createElement("div");
+    toast.className = "toast is-error";
+    toast.setAttribute("role", "status");
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("is-visible"));
+    setTimeout(() => {
+      toast.classList.remove("is-visible");
+      setTimeout(() => toast.remove(), 320);
+    }, 3200);
+  }
+
+  // --- composing from a selection --------------------------------------------
+
+  let pending = null;
+  let addButton = null;
+  let composer = null;
+
+  /**
+   * The current selection as an anchor, or null. A selection is clipped to the
+   * block that holds its start: a quote spanning two blocks is text no single
+   * block contains, so it could never be found again.
+   */
+  function selectionAnchor() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!article.contains(range.commonAncestorContainer)) return null;
+
+    let node = range.startContainer;
+    if (node.nodeType === 1 && range.startOffset < node.childNodes.length) {
+      node = node.childNodes[range.startOffset];
+    }
+    const element = node && node.nodeType === 1 ? node : node && node.parentElement;
+    const block = element && element.closest ? element.closest("[data-src-line]") : null;
+    if (!block || !article.contains(block)) return null;
+
+    const clipped = range.cloneRange();
+    if (!block.contains(clipped.startContainer)) clipped.setStart(block, 0);
+    if (!block.contains(clipped.endContainer)) clipped.setEnd(block, block.childNodes.length);
+
+    const quote = normalize(clipped.toString());
+    if (!quote) return null;
+
+    return {
+      line: block.getAttribute("data-src-line"),
+      hash: block.getAttribute("data-src-hash"),
+      quote: quote,
+      rect: clipped.getBoundingClientRect(),
+    };
+  }
+
+  function hideAddButton() {
+    if (addButton) addButton.remove();
+    addButton = null;
+  }
+
+  function showAddButton(anchor) {
+    hideAddButton();
+    addButton = document.createElement("button");
+    addButton.type = "button";
+    addButton.className = "note-add";
+    addButton.textContent = "Add note";
+    // Without this the button's own mousedown collapses the selection before
+    // the click handler ever sees it.
+    addButton.addEventListener("mousedown", (event) => event.preventDefault());
+    addButton.addEventListener("click", () => openComposer(anchor));
+    document.body.appendChild(addButton);
+    place(addButton, anchor.rect);
+  }
+
+  function closeComposer() {
+    if (composer) composer.remove();
+    composer = null;
+  }
+
+  function openComposer(anchor) {
+    hideAddButton();
+    closeComposer();
+    closePopover();
+
+    composer = document.createElement("div");
+    composer.className = "note-composer";
+
+    const quote = document.createElement("div");
+    quote.className = "note-quote";
+    quote.textContent = "\\u201c" + anchor.quote + "\\u201d";
+    composer.appendChild(quote);
+
+    const field = document.createElement("textarea");
+    field.className = "note-input";
+    field.rows = 3;
+    field.placeholder = "What should change here?";
+    composer.appendChild(field);
+
+    const row = document.createElement("div");
+    row.className = "note-composer-actions";
+
+    const kinds = document.createElement("div");
+    kinds.className = "note-kinds";
+    let kind = "task";
+    for (const option of [["task", "Task"], ["remark", "Remark"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "note-kind-option" + (option[0] === kind ? " is-selected" : "");
+      button.textContent = option[1];
+      button.title =
+        option[0] === "task" ? "Something an agent should change" : "Context, not an instruction";
+      button.addEventListener("click", () => {
+        kind = option[0];
+        for (const sibling of kinds.children) {
+          sibling.classList.toggle("is-selected", sibling === button);
+        }
+      });
+      kinds.appendChild(button);
+    }
+    row.appendChild(kinds);
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "button secondary";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", closeComposer);
+    row.appendChild(cancel);
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "button primary";
+    save.textContent = "Save";
+    const submit = () => {
+      const text = field.value.trim();
+      if (!text) {
+        field.focus();
+        return;
+      }
+      save.disabled = true;
+      send({ op: "add", line: anchor.line, hash: anchor.hash, quote: anchor.quote, text, kind }, save);
+    };
+    save.addEventListener("click", submit);
+    row.appendChild(save);
+
+    composer.appendChild(row);
+    // Cmd/Ctrl+Enter saves, matching the editor's Cmd/Ctrl+S habit.
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submit();
+      if (event.key === "Escape") closeComposer();
+    });
+
+    document.body.appendChild(composer);
+    place(composer, anchor.rect);
+    field.focus();
+  }
+
+  // --- wiring ----------------------------------------------------------------
+
+  paint();
+
+  document.addEventListener("selectionchange", () => {
+    if (composer) return; // the composer owns the selection it was opened with
+    pending = selectionAnchor();
+    if (pending) showAddButton(pending);
+    else hideAddButton();
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".note-popover, .note-composer, .note-add")) return;
+
+    const pin = target.closest("[data-note-pin]");
+    if (pin) {
+      const block = pin.closest("[data-flux-notes]");
+      const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+      openPopover(pin, ids);
+      return;
+    }
+
+    const mark = target.closest("[data-note-mark]");
+    if (mark) {
+      const id = mark.getAttribute("data-note-mark");
+      const marks = article.querySelectorAll('[data-note-mark="' + id + '"]');
+      for (const sibling of marks) sibling.classList.add("is-active");
+      openPopover(mark, [id]);
+      return;
+    }
+
+    closePopover();
+    closeComposer();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closePopover();
+    closeComposer();
+    hideAddButton();
+  });
+})();
+`;
+
 const STYLES = `
 :root{
   color-scheme:light;
@@ -1688,6 +2172,9 @@ const STYLES = `
   --surface:#fff; --surface-hover:#eef0f3; --surface-hover-2:#f7f8fa;
   --active-bg:#e7efff; --selected-bg:#dbeafe;
   --mark-bg:#fde68a; --mark-bg-strong:#fcd34d; --mark-fg:#713f12;
+  /* Notes are teal, deliberately nowhere near the amber of a search hit. */
+  --note-bg:#ccfbf1; --note-bg-strong:#99f6e4; --note-fg:#115e59;
+  --note-pin:#0d9488; --note-border:#5eead4;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -1713,6 +2200,8 @@ const STYLES = `
   --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
   --active-bg:#1f2d44; --selected-bg:#253a5e;
   --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
+  --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
+  --note-pin:#2dd4bf; --note-border:#0f766e;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -1740,6 +2229,8 @@ const STYLES = `
     --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
     --active-bg:#1f2d44; --selected-bg:#253a5e;
     --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
+    --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
+    --note-pin:#2dd4bf; --note-border:#0f766e;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2055,6 +2546,64 @@ body.dragging-page .space-current{
 /* height:auto keeps a width-sized image undistorted when max-width shrinks it. */
 .prose img{max-width:100%; height:auto}
 .wikilink{border-bottom:1px dotted var(--accent)}
+/* Inline notes.
+   Only annotated blocks become positioning contexts, so an unannotated page
+   lays out exactly as it did before this feature existed. The pin sits in the
+   left padding of .content (40px, 20px on mobile) — hence the two offsets. */
+.prose [data-flux-notes]{position:relative}
+.prose mark.note-mark{
+  background:var(--note-bg); color:var(--note-fg);
+  border-radius:2px; padding:0 .05em; cursor:pointer;
+}
+.prose mark.note-mark.is-active{background:var(--note-bg-strong)}
+.note-pin{
+  position:absolute; left:-22px; top:.3em; width:14px; height:14px; padding:0;
+  border:2px solid var(--note-pin); border-radius:50%; background:var(--note-pin);
+  cursor:pointer; line-height:0;
+}
+.note-pin.is-remark{background:transparent}
+.note-pin:hover{box-shadow:0 0 0 3px var(--note-bg)}
+.note-popover,.note-composer{
+  position:fixed; z-index:70; width:min(320px,calc(100vw - 24px));
+  padding:12px 14px; border:1px solid var(--note-border); border-radius:8px;
+  background:var(--surface); color:var(--fg); box-shadow:var(--shadow-lg);
+  display:flex; flex-direction:column; gap:10px;
+}
+.note-card{display:flex; flex-direction:column; gap:6px}
+.note-card + .note-card{border-top:1px solid var(--line); padding-top:10px}
+.note-card-head{display:flex; align-items:center; gap:8px}
+.note-kind{
+  font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+  padding:1px 7px; border-radius:999px;
+  background:var(--note-bg); color:var(--note-fg); border:1px solid var(--note-border);
+}
+.note-kind.is-remark{background:var(--surface-hover); color:var(--muted); border-color:var(--line)}
+.note-when{color:var(--muted); font-size:12px}
+.note-quote{
+  color:var(--muted); font-size:13px; font-style:italic;
+  border-left:2px solid var(--note-border); padding-left:8px;
+}
+/* pre-wrap so a multi-line note keeps the shape its author gave it. */
+.note-text{font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere}
+.note-resolve{align-self:flex-start}
+.note-input{
+  width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
+  background:var(--bg); color:var(--fg); font:inherit; font-size:14px; resize:vertical;
+}
+.note-composer-actions{display:flex; align-items:center; gap:8px}
+.note-kinds{display:inline-flex; margin-right:auto; border:1px solid var(--line); border-radius:6px; overflow:hidden}
+.note-kind-option{
+  padding:4px 10px; border:0; background:var(--surface); color:var(--muted);
+  font:inherit; font-size:13px; cursor:pointer;
+}
+.note-kind-option.is-selected{background:var(--note-bg); color:var(--note-fg); font-weight:600}
+.note-add{
+  position:fixed; z-index:70; padding:5px 12px;
+  border:1px solid var(--note-border); border-radius:999px;
+  background:var(--note-pin); color:#fff;
+  font:inherit; font-size:13px; font-weight:600; cursor:pointer;
+  box-shadow:var(--shadow-md);
+}
 /* Diff / history viewer */
 .button.disabled{color:var(--muted); background:var(--surface); cursor:default; opacity:.55}
 .button.disabled:hover{background:var(--surface)}
@@ -2219,5 +2768,7 @@ body.dragging-page .space-current{
   .content{padding:20px}
   .page-head{display:block}
   .actions{margin-bottom:16px}
+  /* Less left padding to hang the pin in, so it tucks in closer. */
+  .note-pin{left:-17px; width:11px; height:11px}
 }
 `;

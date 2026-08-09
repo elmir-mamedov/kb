@@ -1,7 +1,11 @@
 import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
+import type StateBlock from "markdown-it/lib/rules_block/state_block.mjs";
+import type StateCore from "markdown-it/lib/rules_core/state_core.mjs";
 import hljs from "highlight.js";
+import { createHash } from "node:crypto";
+import { parseNotes } from "./notes.js";
 
 /**
  * Resolve a [[wiki-link]] target against the page it appears on.
@@ -211,6 +215,202 @@ function rewriteAttr(md: MarkdownIt, rule: string, attr: string, spaceKey: strin
   };
 }
 
+/** Opening marker of a note comment, at the start of its own line. */
+const NOTE_OPEN_RE = /^<!--[ \t]*flux:note\b/;
+
+/** A line's content with the block indent and any blockquote markers stripped. */
+function blockLine(state: StateBlock, line: number): string {
+  return state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+}
+
+/**
+ * `<!-- flux:note … -->` comments, the on-disk form of an inline note.
+ *
+ * With `html: false` markdown-it's own `html_block` rule bails out, so without
+ * this the comment would render as visible escaped text — and worse, its
+ * `> quoted selection` line would start a blockquote that swallows the rest of
+ * the note. This claims the whole comment and renders nothing in its place.
+ * Every other HTML comment still renders escaped, so this is a carve-out for
+ * our own syntax rather than a relaxation of `html: false`.
+ *
+ * Registered first in the block chain rather than merely before `paragraph`:
+ * `lheading` inspects the following line for a setext underline before it
+ * consults any terminator rule, so a note whose text contains a `---` line
+ * would otherwise be parsed as an `<h2>`. `table` looks ahead similarly.
+ *
+ * An unterminated comment is left alone deliberately. Consuming to EOF (what
+ * `html_block` does) would blank the rest of the page and strip every anchor
+ * below it with nothing on screen to explain why; falling through to
+ * `paragraph` shows the broken marker as text, which is loud and local.
+ */
+function fluxNote(
+  state: StateBlock,
+  startLine: number,
+  endLine: number,
+  silent: boolean
+): boolean {
+  if (state.sCount[startLine] - state.blkIndent >= 4) return false; // indented code
+
+  const first = blockLine(state, startLine);
+  if (first.charCodeAt(0) !== 0x3c /* < */) return false;
+  if (!NOTE_OPEN_RE.test(first)) return false;
+
+  let lastLine = -1;
+  if (first.includes("-->")) {
+    lastLine = startLine;
+  } else {
+    for (let line = startLine + 1; line < endLine; line += 1) {
+      if (blockLine(state, line).trim() === "-->") {
+        lastLine = line;
+        break;
+      }
+    }
+  }
+  // Checked before the `silent` return so both modes agree on what is a note;
+  // otherwise a malformed one could terminate a paragraph the non-silent pass
+  // then declines to consume.
+  if (lastLine < 0) return false;
+  if (silent) return true;
+
+  const token = state.push("flux_note", "", 0);
+  token.map = [startLine, lastLine + 1];
+  state.line = lastLine + 1;
+  return true;
+}
+
+/** Source position of a rendered block, so the write path can find it again. */
+export interface SourceBlock {
+  /** 0-based start line within the body. */
+  line: number;
+  /** Fingerprint of the block's source, matching its `data-src-hash`. */
+  hash: string;
+}
+
+/**
+ * A short digest of a block's source lines. Only used to detect that a page
+ * changed under a note being written, so eight hex characters is plenty.
+ */
+function blockHash(lines: string[]): string {
+  return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 8);
+}
+
+/** Top-level block-open tokens carrying a source map, in document order. */
+function anchorTokens(tokens: Token[]): Token[] {
+  // `state.push` decrements the level before stamping a closer, so `*_close`
+  // tokens also report level 0 — hence the explicit `nesting` test.
+  return tokens.filter(
+    (t) => t.level === 0 && t.nesting >= 0 && t.map !== null && t.type !== "flux_note"
+  );
+}
+
+/**
+ * Every line occupied by a note comment, at any nesting depth. Excluded from
+ * block hashes below, so that leaving a note *inside* a list or blockquote
+ * doesn't invalidate the enclosing block's own anchor. (A note placed before a
+ * block already falls outside that block's map.)
+ */
+function noteLines(tokens: Token[]): Set<number> {
+  const lines = new Set<number>();
+  for (const token of tokens) {
+    if (token.type !== "flux_note" || !token.map) continue;
+    for (let line = token.map[0]; line < token.map[1]; line += 1) lines.add(line);
+  }
+  return lines;
+}
+
+/** The source lines a block covers, minus any note comments nested inside it. */
+function sourceOf(lines: string[], map: [number, number], notes: Set<number>): string[] {
+  const out: string[] = [];
+  for (let line = map[0]; line < map[1]; line += 1) {
+    if (!notes.has(line)) out.push(lines[line]);
+  }
+  // A block's map can run past its last line of content (a list's does), so
+  // trailing blanks are dropped: whether a block is followed by one blank line
+  // or two is not part of what makes it that block.
+  while (out.length && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
+/**
+ * Stamp every top-level block with the source position it came from, and with
+ * the ids of the notes attached to it.
+ *
+ * Line numbers are relative to the string handed to `md.render()` — the page
+ * body, frontmatter already stripped — because the only transform markdown-it
+ * applies first is `normalize`, which rewrites line endings and NULs without
+ * changing the line count.
+ *
+ * A note attaches to the block that *contains* it if it was written inside one
+ * (a note in a list item annotates the whole list), otherwise to the first
+ * block that starts after it. A note trailing the last block falls back to that
+ * block, so a note is never rendered invisible.
+ */
+function fluxAnchor(state: StateCore): void {
+  const lines = state.src.split("\n");
+  const notes = noteLines(state.tokens);
+  const blocks = anchorTokens(state.tokens);
+  const attached = new Map<Token, string[]>();
+
+  for (const note of parseNotes(state.src)) {
+    const target =
+      blocks.find((t) => t.map![0] <= note.line && note.line < t.map![1]) ??
+      blocks.find((t) => t.map![0] > note.line) ??
+      blocks[blocks.length - 1];
+    if (!target) continue;
+    const ids = attached.get(target);
+    if (ids) ids.push(note.id);
+    else attached.set(target, [note.id]);
+  }
+
+  for (const token of blocks) {
+    const anchor = {
+      line: token.map![0],
+      hash: blockHash(sourceOf(lines, token.map!, notes)),
+      notes: attached.get(token) ?? [],
+    };
+    if (token.type === "fence") {
+      // The default fence renderer hangs `token.attrs` off the inner <code>,
+      // and the mermaid override below builds its <pre> by hand, so the fence
+      // renderer emits these itself.
+      token.meta = { ...(token.meta ?? {}), anchor };
+      continue;
+    }
+    token.attrSet("data-src-line", String(anchor.line));
+    token.attrSet("data-src-hash", anchor.hash);
+    if (anchor.notes.length) token.attrSet("data-flux-notes", anchor.notes.join(" "));
+  }
+}
+
+/** A block anchor as attributes, for renderers that build their own open tag. */
+function anchorAttrs(md: MarkdownIt, token: Token): string {
+  const anchor = (token.meta as { anchor?: { line: number; hash: string; notes: string[] } })
+    ?.anchor;
+  if (!anchor) return "";
+  let out = ` data-src-line="${anchor.line}" data-src-hash="${md.utils.escapeHtml(anchor.hash)}"`;
+  if (anchor.notes.length) {
+    out += ` data-flux-notes="${md.utils.escapeHtml(anchor.notes.join(" "))}"`;
+  }
+  return out;
+}
+
+/**
+ * The top-level blocks of a body, with the same line anchors and fingerprints
+ * the renderer stamps into the HTML. The note write path uses this to confirm
+ * the block a note is aimed at is still the one the reader was looking at.
+ */
+export function sourceBlocks(body: string): SourceBlock[] {
+  const md = createRenderer(() => undefined);
+  // Hash the same normalized text the renderer sees, so the two always agree.
+  const src = body.replace(/\r\n?/g, "\n");
+  const tokens = md.parse(src, {});
+  const lines = src.split("\n");
+  const notes = noteLines(tokens);
+  return anchorTokens(tokens).map((token) => ({
+    line: token.map![0],
+    hash: blockHash(sourceOf(lines, token.map!, notes)),
+  }));
+}
+
 /**
  * Create a markdown renderer.
  * @param resolveTitle maps a slug to a page title, so [[wiki-links]] can show
@@ -251,13 +451,30 @@ export function createRenderer(
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
     const lang = token.info.trim().split(/\s+/)[0];
-    if (lang === "mermaid") {
-      // Mermaid reads the element's textContent, so escape for valid HTML; the
-      // browser decodes it back to the raw diagram source before Mermaid runs.
-      return `<pre class="mermaid">${md.utils.escapeHtml(token.content)}</pre>\n`;
-    }
-    return defaultFence(tokens, idx, options, env, self);
+    const html =
+      lang === "mermaid"
+        ? // Mermaid reads the element's textContent, so escape for valid HTML;
+          // the browser decodes it back to the raw diagram source before
+          // Mermaid runs.
+          `<pre class="mermaid">${md.utils.escapeHtml(token.content)}</pre>\n`
+        : defaultFence(tokens, idx, options, env, self);
+    // Both branches open with `<pre`. The note anchor goes there rather than
+    // through attrSet, which would put it on the inner <code> — not the element
+    // the reader selects text in or the pin is positioned against.
+    const anchor = anchorAttrs(md, token);
+    return anchor && html.startsWith("<pre") ? `<pre${anchor}${html.slice(4)}` : html;
   };
+
+  // Inline notes: consume the comment (see fluxNote for why this is needed at
+  // all with html:false) and stamp source anchors onto every top-level block.
+  md.block.ruler.before("table", "flux_note", fluxNote, {
+    alt: ["paragraph", "reference", "blockquote", "list"],
+  });
+  md.core.ruler.push("flux_anchor", fluxAnchor);
+  // A newline rather than "": markdown-it relies on block tokens emitting their
+  // own separators, and an empty string merges the paragraphs of a tight list
+  // that has a note between them.
+  md.renderer.rules.flux_note = () => "\n";
 
   // Accept an optional `=WxH` size spec on images (`![alt](pic.png =600x)`),
   // the only way to size an image given `html: false` above.

@@ -378,3 +378,68 @@ test("copy link: a toast is created up front and rises from below on copy", () =
   // The toast carries the wording now, so the button no longer swaps its label.
   assert.doesNotMatch(html, /copyLabel/);
 });
+
+test("notes: the page view carries its notes as an escaped JSON payload", () => {
+  const html = layout(
+    pageView({
+      notes: [
+        {
+          id: "n7k2m4x8",
+          kind: "task",
+          at: "2026-08-10T09:12:04Z",
+          by: "alice",
+          quote: "restart the workers",
+          text: 'Stale — use <b>rolling</b> restart & "the script".',
+          line: 4,
+        },
+      ],
+    })
+  );
+  assert.match(html, /<div id="flux-notes" hidden data-slug="flux\/notes" data-notes="/);
+  // Everything that could break out of the attribute or the document is escaped.
+  assert.match(html, /&quot;n7k2m4x8&quot;/);
+  assert.match(html, /&lt;b&gt;rolling&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<b>rolling<\/b>/);
+});
+
+test("notes: the payload ships even with no notes, so the composer can post", () => {
+  const html = layout(pageView());
+  assert.match(html, /data-slug="flux\/notes" data-notes="\[\]"/);
+  assert.match(html, /fetch\("\/_notes\/" \+ slug/);
+});
+
+test("notes: highlights are built as nodes, never assigned as HTML", () => {
+  const html = layout(pageView());
+  assert.match(html, /document\.createElement\("mark"\)/);
+  assert.match(html, /createTreeWalker\(block, NodeFilter\.SHOW_TEXT\)/);
+  // The whole feature writes user- and agent-authored text into the page.
+  assert.doesNotMatch(html, /innerHTML/);
+});
+
+test("notes: the composer keeps the selection alive across its own mousedown", () => {
+  const html = layout(pageView());
+  // Without this the button collapses the selection before the click fires.
+  assert.match(html, /addButton\.addEventListener\("mousedown", \(event\) => event\.preventDefault\(\)\)/);
+});
+
+test("notes: whitespace normalization survives the template literal intact", () => {
+  const html = layout(pageView());
+  // A single backslash here would make this /s+/ and quietly break every quote
+  // containing the letter s.
+  assert.match(html, /text\.replace\(\/\\s\+\/g, " "\)/);
+});
+
+test("notes: a read-only or archive view ships neither the payload nor the script", () => {
+  for (const view of [pageView({ canEdit: false }), pageView({ isArchiveView: true })]) {
+    const html = layout(view);
+    assert.doesNotMatch(html, /id="flux-notes"/);
+    assert.doesNotMatch(html, /_notes\//);
+  }
+});
+
+test("notes: the pin finds a legal host inside list and table blocks", () => {
+  const html = layout(pageView());
+  // A <button> is invalid as a direct child of <ul>/<ol>/<table>.
+  assert.match(html, /if \(tag === "UL" \|\| tag === "OL"\) return block\.querySelector\("li"\)/);
+  assert.match(html, /if \(tag === "TABLE"\) return block\.querySelector\("th, td"\)/);
+});

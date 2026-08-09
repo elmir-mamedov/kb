@@ -16,6 +16,7 @@ import {
   type PageNode,
   type TreeFilter,
 } from "./content.js";
+import { stripNotes } from "./notes.js";
 
 export interface SearchHit {
   slug: string;
@@ -54,8 +55,12 @@ export function searchTokens(query: string): string[] {
   return normalizeText(query).split(" ").filter(Boolean);
 }
 
-/** Map over items with bounded concurrency, preserving input order. */
-async function mapWithConcurrency<T, R>(
+/**
+ * Map over items with bounded concurrency, preserving input order. Exported for
+ * `kb_list_notes`, which sweeps the same page set this module does and wants the
+ * same "don't open the whole KB at once" behaviour.
+ */
+export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>
@@ -183,7 +188,13 @@ export async function searchPages(
     // Folders are pure containers with no body to match — skip them.
     if (isFolderPage(page.data)) continue;
 
-    const score = scorePage(query, page);
+    // Inline notes are annotations *about* a page, not part of it: they must
+    // not make a page match, nor window an excerpt onto comment syntax. Stripped once
+    // so scoring and the excerpt see exactly the same prose. `kb_list_notes` is
+    // how notes are found.
+    const searchable = { ...page, body: stripNotes(page.body) };
+
+    const score = scorePage(query, searchable);
     if (score === 0) continue;
 
     hits.push({
@@ -194,7 +205,7 @@ export async function searchPages(
       archived: page.data.archived === true,
       tags: page.data.tags ?? [],
       summary: page.data.summary,
-      excerpt: excerptFor(query, page.body, page.data.summary),
+      excerpt: excerptFor(query, searchable.body, page.data.summary),
       score,
     });
   }

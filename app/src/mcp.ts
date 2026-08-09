@@ -8,7 +8,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { Content, flatten, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
-import { searchPages } from "./search.js";
+import { parseNotes, type Note, type NoteKind } from "./notes.js";
+import { mapWithConcurrency, searchPages } from "./search.js";
 import { syncFromEnv } from "./sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -167,6 +168,64 @@ async function searchMatches(
   }));
 }
 
+/** A note plus enough of its page to act on it without another lookup. */
+interface ListedNote extends Note {
+  page: { slug: string; id?: string; title: string; path: string };
+}
+
+/**
+ * Every inline note across the KB, or within one space or page.
+ *
+ * Scoping to a space goes through the full tree rather than `spaceTree`, which
+ * deliberately omits the space's own landing page — a note left there is still a
+ * note, and silently skipping it would be the worst kind of miss.
+ */
+async function collectNotes(
+  filter: TreeFilter,
+  opts: { space?: string; slug?: string; kind?: NoteKind }
+): Promise<ListedNote[]> {
+  let nodes: PageNode[];
+  if (opts.slug !== undefined) {
+    const top = await content.tree(filter);
+    const node = flatten(top).find((n) => n.slug === cleanSlug(opts.slug!));
+    nodes = node ? [node] : [];
+  } else if (opts.space) {
+    const top = await content.tree(filter);
+    const key = content.spaceKeyOf(opts.space);
+    const node = key ? top.find((n) => n.slug === key) : undefined;
+    nodes = node ? flatten([node]) : [];
+  } else {
+    nodes = flatten(await content.tree(filter));
+  }
+
+  const pages = await mapWithConcurrency(nodes, 32, async (node) => {
+    if (node.isFolder) return null; // a pure container has no body to annotate
+    try {
+      return await content.load(node.slug);
+    } catch {
+      return null; // skip pages with unreadable or invalid frontmatter
+    }
+  });
+
+  const found: ListedNote[] = [];
+  for (const page of pages) {
+    if (!page) continue;
+    for (const note of parseNotes(page.body)) {
+      if (opts.kind && note.kind !== opts.kind) continue;
+      found.push({
+        ...note,
+        page: {
+          slug: page.slug,
+          id: page.data.id,
+          title: page.data.title,
+          path: kbRelPath(page.fsPath),
+        },
+      });
+    }
+  }
+  return found;
+}
+
 const filterSchema = z.enum(["live", "archived", "all"]);
 
 const server = new McpServer(
@@ -176,7 +235,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, and kb_list_pages (each listed page reports isFolder); pass `space` to kb_list_pages or kb_search to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`. LINKING: every page has a stable `id` (returned by kb_get_page, kb_list_pages, kb_search, and the create tools). To link to another page from Markdown, prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, kb_list_pages (each listed page reports isFolder), and kb_list_notes; pass `space` to kb_list_pages, kb_search or kb_list_notes to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`. LINKING: every page has a stable `id` (returned by kb_get_page, kb_list_pages, kb_search, and the create tools). To link to another page from Markdown, prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves. INLINE NOTES: a page's Markdown may contain `<!-- flux:note id=... kind=task|remark ... -->` comments, each anchored directly above the block it refers to, with the annotated phrase on a `> ` line inside it. These are messages left for you, usually from the web UI. A `task` asks for a change to that part of the page; a `remark` is context to respect, not act on. Find them with kb_list_notes. To resolve a task, make the edit and delete that note's comment in the same kb_update_page call — never delete a note without addressing it, and never leave one you have acted on. Do not add or reword notes as a side effect of an unrelated edit; preserve the ones you were not asked about.",
   }
 );
 
@@ -291,6 +350,51 @@ server.registerTool(
       frontmatter: page.data,
       path: kbRelPath(page.fsPath),
       body: page.body,
+      // Also parsed out, because `body` shows where each note sits but reading
+      // the position out of raw comment syntax is needless work.
+      notes: parseNotes(page.body),
+    });
+  }
+);
+
+server.registerTool(
+  "kb_list_notes",
+  {
+    title: "List KB Notes",
+    description:
+      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history.",
+    inputSchema: {
+      slug: z.string().optional().describe("Limit to a single page, by slug."),
+      space: z
+        .string()
+        .optional()
+        .describe("Limit to a single space (its top-level folder key, e.g. flux)."),
+      kind: z.enum(["task", "remark"]).optional().describe("Limit to one kind of note."),
+      filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("Maximum notes returned. Defaults to 50."),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, space, kind, filter, limit }) => {
+    const selectedFilter = filter ?? "live";
+    const selectedLimit = limit ?? 50;
+    const found = await collectNotes(selectedFilter, { space, slug, kind });
+    return textResult({
+      filter: selectedFilter,
+      space: space ?? null,
+      slug: slug ?? null,
+      kind: kind ?? null,
+      total: found.length,
+      notes: found.slice(0, selectedLimit),
     });
   }
 );
