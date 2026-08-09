@@ -1687,6 +1687,7 @@ const STYLES = `
   --fg-secondary:#374151;
   --surface:#fff; --surface-hover:#eef0f3; --surface-hover-2:#f7f8fa;
   --active-bg:#e7efff; --selected-bg:#dbeafe;
+  --mark-bg:#fde68a; --mark-bg-strong:#fcd34d; --mark-fg:#713f12;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -1711,6 +1712,7 @@ const STYLES = `
   --fg-secondary:#c9d1d9;
   --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
   --active-bg:#1f2d44; --selected-bg:#253a5e;
+  --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -1737,6 +1739,7 @@ const STYLES = `
     --fg-secondary:#c9d1d9;
     --surface:#161b22; --surface-hover:#21262d; --surface-hover-2:#21262d;
     --active-bg:#1f2d44; --selected-bg:#253a5e;
+    --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -1858,13 +1861,13 @@ a:hover{text-decoration:underline}
   display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
   font-size:12px; color:var(--muted); margin-top:3px; line-height:1.45;
 }
-/* The browser default (black on bright yellow) is unreadable on a dark surface,
-   so the highlight rides the accent tokens and flips with the theme. */
+/* Yellow highlight, but the browser default (black on bright yellow) is
+   unreadable on a dark surface, so it rides tokens that flip with the theme. */
 .sidebar-search-item mark{
-  background:var(--active-bg); color:var(--accent); font-weight:600;
+  background:var(--mark-bg); color:var(--mark-fg); font-weight:600;
   border-radius:2px; padding:0 1px;
 }
-.sidebar-search-item.is-active mark{background:var(--selected-bg)}
+.sidebar-search-item.is-active mark{background:var(--mark-bg-strong)}
 .sidebar-search-status{padding:6px 8px; font-size:12px; color:var(--muted)}
 .sidebar-search-status[hidden]{display:none}
 .move-error{
