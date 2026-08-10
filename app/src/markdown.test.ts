@@ -73,6 +73,66 @@ test("slug-based [[wiki-links]] still resolve when no id resolver is given", () 
   assert.match(html, />Other</);
 });
 
+/** A renderer with one id-addressable page, for the table tests below. */
+const tableRenderer = () =>
+  createRenderer(
+    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
+    "flux/page",
+    (id) => (id === "abc123" ? "flux/ledger" : undefined)
+  );
+
+test("a wiki-link's label pipe inside a table cell is not read as a cell boundary", () => {
+  const html = tableRenderer().render(
+    "| What | Where |\n| --- | --- |\n| `invoice` | a historical [[id:abc123|ledger]] in Postgres |\n"
+  );
+  // The whole cell survives: before the fix it ended at "[[id:abc123", and the
+  // remainder landed in a third column the header does not have, so it was
+  // dropped outright.
+  assert.match(html, /<td>a historical <a href="\/flux\/ledger" class="wikilink">ledger<\/a> in Postgres<\/td>/);
+  assert.doesNotMatch(html, /\[\[/);
+});
+
+test("a hand-escaped `\\|` in a table cell renders the same, without a stray backslash", () => {
+  const html = tableRenderer().render(
+    "| A | B |\n| --- | --- |\n| x | see [[id:abc123\\|the ledger]] |\n"
+  );
+  assert.match(html, /<td>see <a href="\/flux\/ledger" class="wikilink">the ledger<\/a><\/td>/);
+  assert.doesNotMatch(html, /\\/);
+});
+
+test("slug wiki-links and table headers get the same treatment as id links", () => {
+  const html = tableRenderer().render(
+    "| Page [[flux/ledger|H]] | B |\n| --- | --- |\n| [[flux/ledger|the ledger]] | y |\n"
+  );
+  assert.match(html, /<th>Page <a href="\/flux\/ledger" class="wikilink">H<\/a><\/th>/);
+  assert.match(html, /<td><a href="\/flux\/ledger" class="wikilink">the ledger<\/a><\/td>/);
+});
+
+test("a pipe outside a wiki-link still splits cells, and one in prose is untouched", () => {
+  const html = tableRenderer().render(
+    "| A | B |\n| --- | --- |\n| x | y |\n\nProse with a | pipe and [[id:abc123|a link]].\n"
+  );
+  assert.match(html, /<td>x<\/td>\n<td>y<\/td>/);
+  assert.match(html, /<p[^>]*>Prose with a \| pipe and <a href="\/flux\/ledger" class="wikilink">a link<\/a>\.<\/p>/);
+});
+
+test("a table-shaped code sample keeps its wiki-link pipe verbatim", () => {
+  const html = tableRenderer().render(
+    "```\n| A | B |\n| --- | --- |\n| x | [[id:abc123|ledger]] |\n```\n"
+  );
+  assert.match(html, /\[\[id:abc123\|ledger\]\]/);
+  assert.doesNotMatch(html, /\\\|/);
+});
+
+test("escaping table pipes leaves a block's source anchor pointing at the stored body", () => {
+  const body = "| A | B |\n| --- | --- |\n| x | [[id:abc123|ledger]] |\n";
+  const html = tableRenderer().render(body);
+  const hash = /data-src-hash="([0-9a-f]+)"/.exec(html)?.[1];
+  // The note write path re-derives this from the file on disk, which still has
+  // the unescaped pipe — the two must agree or notes on the table cannot save.
+  assert.equal(hash, sourceBlocks(body)[0].hash);
+});
+
 test("images render without size attributes by default", () => {
   const html = render("![Diagram](_assets/pic.png)");
   assert.match(html, /<img src="\/flux\/_assets\/pic\.png" alt="Diagram">/);

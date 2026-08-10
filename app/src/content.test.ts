@@ -434,6 +434,31 @@ test("issue #3: moving a page rewrites inbound links (bare, full-slug, absolute)
   }
 });
 
+test("issue #3: a table link written with an escaped pipe follows the move too", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Area", "# Area\n");
+    await content.createPage("docs/area", "Deep", "# Deep\n");
+    // `\|` is how a wiki-link's label survives a table cell, so the rewriter has
+    // to read the target as ending at the backslash, not include it.
+    await content.createPage(
+      "docs",
+      "Ref",
+      "| A | B |\n| --- | --- |\n| x | [[docs/area/deep\\|the page]] |\n"
+    );
+    await content.createPage("docs", "Dest", "# Dest\n");
+
+    await content.movePage("docs/area", "docs/dest");
+
+    const ref = await content.loadRaw("docs/ref");
+    assert.match(ref!.raw, /\[\[docs\/dest\/area\/deep\\\|the page\]\]/);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
 test("issue #3: moving a section rewrites links to its descendants too", async () => {
   const kb: TempKb = await makeTempKb();
   try {

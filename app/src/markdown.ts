@@ -48,6 +48,93 @@ export function resolveWikiTarget(
 /** A trailing `=WxH` size spec inside an image's parens: `=600x`, `=600x400`, `=x400`. */
 const IMAGE_SIZE_RE = /^=(\d*)x(\d*)/;
 
+/** An opening or closing code fence: three or more backticks or tildes. */
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+/** A GFM table's delimiter row — the `| --- | :--: |` line under its header. */
+const TABLE_DELIMITER_RE = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+
+/** One whole `[[…]]` wiki-link, the same span the inline rule below claims. */
+const WIKILINK_RE = /\[\[[^\]\n]*\]\]/g;
+
+/** The delimiter row under a table header. A `|`-less `---` is a setext rule. */
+function isTableDelimiter(line: string): boolean {
+  return line.includes("|") && TABLE_DELIMITER_RE.test(line);
+}
+
+/** Escape every not-already-escaped `|` inside the wiki-links on one line. */
+function escapeWikiPipes(line: string): string {
+  if (!line.includes("[[")) return line;
+  return line.replace(WIKILINK_RE, (span) => span.replace(/(?<!\\)\|/g, "\\|"));
+}
+
+/**
+ * Escape the `|` in `[[target|Label]]` wiki-links that sit inside a table row.
+ *
+ * A table row is split into cells before any inline rule runs, so a wiki-link's
+ * alias pipe reads as a cell boundary: `[[id:abc|ledger]]` ends the cell after
+ * `[[id:abc`, and the rest spills into a column the header does not have, where
+ * it is dropped. Escaping is the GFM-sanctioned fix, and the cell splitter takes
+ * the backslash back off again — so the inline rule still sees the plain
+ * `[[id:abc|ledger]]` it expects, and only the two characters between the source
+ * and the cell change. Doing it here rather than asking every author (and every
+ * LLM writing a page) to remember `\|` keeps one wiki-link syntax across a page.
+ *
+ * Rows are found by the shape markdown-it itself looks for — a line containing
+ * `|` followed by a `| --- |` delimiter row, running to the next blank line —
+ * with fenced code skipped. The scan deliberately errs towards marking too much:
+ * markdown-it ends a table at several kinds of line this does not model, and an
+ * escape that lands outside a real table costs nothing, because the inline rule
+ * unescapes `\|` before splitting target from label. It errs the other way for a
+ * table nested inside a blockquote or a list item, which it does not recognise
+ * at all; the pipe still has to be written `\|` by hand there.
+ */
+function escapeTableWikiPipes(src: string): string {
+  if (!src.includes("[[")) return src;
+
+  const lines = src.split("\n");
+  let fence = "";
+  let inTable = false;
+  let changed = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    // Fence tracking mirrors `scanNotes`: a table cannot open inside a fence,
+    // and a `[[a|b]]` written in a code sample is text, not a link.
+    const rail = FENCE_RE.exec(line);
+    if (fence) {
+      if (rail && rail[1][0] === fence[0] && rail[1].length >= fence.length && !rail[2].trim()) {
+        fence = "";
+      }
+      continue;
+    }
+    if (rail && !(rail[1][0] === "`" && rail[2].includes("`"))) {
+      fence = rail[1];
+      inTable = false;
+      continue;
+    }
+
+    if (inTable) {
+      if (!line.trim()) {
+        inTable = false;
+        continue;
+      }
+    } else if (line.includes("|") && line.trim() && isTableDelimiter(lines[i + 1] ?? "")) {
+      inTable = true; // this is the header; the delimiter row follows
+    } else {
+      continue;
+    }
+
+    const escaped = escapeWikiPipes(line);
+    if (escaped !== line) {
+      lines[i] = escaped;
+      changed = true;
+    }
+  }
+
+  return changed ? lines.join("\n") : src;
+}
+
 /** markdown-it's own whitespace test, inlined to avoid a deep internal import. */
 function isSpaceCode(code: number): boolean {
   return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
@@ -278,6 +365,19 @@ function fluxNote(
   return true;
 }
 
+/**
+ * Where `flux_table_pipes` parks the untouched source for `flux_anchor`. On
+ * `state.env` rather than a closure variable so nested or repeated renders on
+ * one renderer can't read each other's source.
+ */
+const RAW_SRC = "fluxRawSrc";
+
+/** The source as `md.render` received it, before `flux_table_pipes` ran. */
+function rawSource(state: StateCore): string {
+  const raw = (state.env as Record<string, unknown> | undefined)?.[RAW_SRC];
+  return typeof raw === "string" ? raw : state.src;
+}
+
 /** Source position of a rendered block, so the write path can find it again. */
 export interface SourceBlock {
   /** 0-based start line within the body. */
@@ -336,9 +436,9 @@ function sourceOf(lines: string[], map: [number, number], notes: Set<number>): s
  * the ids of the notes attached to it.
  *
  * Line numbers are relative to the string handed to `md.render()` — the page
- * body, frontmatter already stripped — because the only transform markdown-it
- * applies first is `normalize`, which rewrites line endings and NULs without
- * changing the line count.
+ * body, frontmatter already stripped — because the transforms markdown-it runs
+ * first (`normalize`, and our own `flux_table_pipes`) rewrite characters within
+ * a line without changing the line count.
  *
  * A note attaches to the block that *contains* it if it was written inside one
  * (a note in a list item annotates the whole list), otherwise to the first
@@ -346,12 +446,15 @@ function sourceOf(lines: string[], map: [number, number], notes: Set<number>): s
  * block, so a note is never rendered invisible.
  */
 function fluxAnchor(state: StateCore): void {
-  const lines = state.src.split("\n");
+  // The source as it is on disk, not as `flux_table_pipes` rewrote it: these
+  // hashes have to match the ones `sourceBlocks` computes from the stored body.
+  const src = rawSource(state);
+  const lines = src.split("\n");
   const notes = noteLines(state.tokens);
   const blocks = anchorTokens(state.tokens);
   const attached = new Map<Token, string[]>();
 
-  for (const note of parseNotes(state.src)) {
+  for (const note of parseNotes(src)) {
     const target =
       blocks.find((t) => t.map![0] <= note.line && note.line < t.map![1]) ??
       blocks.find((t) => t.map![0] > note.line) ??
@@ -465,6 +568,15 @@ export function createRenderer(
     return anchor && html.startsWith("<pre") ? `<pre${anchor}${html.slice(4)}` : html;
   };
 
+  // Table rows are cut into cells before any inline rule runs, so a wiki-link's
+  // `|` has to be escaped in the source or it reads as a cell boundary. Runs
+  // ahead of `block` for that reason, and stashes what it was given so the
+  // anchors stamped later still fingerprint the body as it is stored.
+  md.core.ruler.before("block", "flux_table_pipes", (state) => {
+    if (state.env) (state.env as Record<string, unknown>)[RAW_SRC] = state.src;
+    state.src = escapeTableWikiPipes(state.src);
+  });
+
   // Inline notes: consume the comment (see fluxNote for why this is needed at
   // all with html:false) and stamp source anchors onto every top-level block.
   md.block.ruler.before("table", "flux_note", fluxNote, {
@@ -500,10 +612,16 @@ export function createRenderer(
     if (end < 0) return false;
 
     if (!silent) {
-      const inner = state.src.slice(start + 2, end);
-      const [rawTarget, rawLabel] = inner.split("|");
-      const label = rawLabel?.trim();
-      const target = (rawTarget || "").trim();
+      // `\|` is how the alias pipe survives a table cell — written by hand, or
+      // by `flux_table_pipes` above on a line it read as a table row. Cell
+      // splitting removes the escape again, so one is only still here when the
+      // link turned out not to be in a table after all; either way the label
+      // starts after the first pipe, escaped or not.
+      const inner = state.src.slice(start + 2, end).replace(/\\\|/g, "|");
+      const bar = inner.indexOf("|");
+      const rawTarget = bar === -1 ? inner : inner.slice(0, bar);
+      const label = bar === -1 ? undefined : inner.slice(bar + 1).trim();
+      const target = rawTarget.trim();
       const idMatch = /^id:(.+)$/.exec(target);
 
       if (idMatch) {
@@ -526,11 +644,7 @@ export function createRenderer(
         }
         state.push("link_close", "a", -1);
       } else {
-        const slug = resolveWikiTarget(
-          rawTarget || "",
-          currentSlug,
-          (s) => resolveTitle(s) !== undefined
-        );
+        const slug = resolveWikiTarget(rawTarget, currentSlug, (s) => resolveTitle(s) !== undefined);
         const text = label || resolveTitle(slug) || slug.split("/").pop() || slug;
 
         const open = state.push("link_open", "a", 1);

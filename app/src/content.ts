@@ -1310,9 +1310,11 @@ export function rewriteLinks(raw: string, ctx: RewriteLinksCtx): string {
 
   // [[wiki-links]] — target may be an id, a full slug, or a bare name.
   let out = raw.replace(/\[\[([^\]\n]+)\]\]/g, (full, inner: string) => {
-    const bar = inner.indexOf("|");
+    // A link inside a table cell may write the pipe as `\|`; the escape belongs
+    // to the label, not to the target it would otherwise be glued onto.
+    const bar = inner.search(/\\?\|/);
     const rawTarget = (bar === -1 ? inner : inner.slice(0, bar)).trim();
-    const labelPart = bar === -1 ? "" : inner.slice(bar); // keeps the leading "|"
+    const labelPart = bar === -1 ? "" : inner.slice(bar); // keeps the leading "|" or "\|"
     if (!rawTarget || /^id:/i.test(rawTarget)) return full;
 
     const hadSlash = rawTarget.startsWith("/");
