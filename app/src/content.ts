@@ -36,6 +36,11 @@ export interface PageNode {
    * activity bubbles up. Drives "recently modified" sibling ordering.
    */
   modifiedMs: number;
+  /**
+   * Manual sibling position from frontmatter (`order`), when the group this node
+   * belongs to has been arranged by hand. Undefined means unplaced.
+   */
+  order?: number;
   children: PageNode[];
 }
 
@@ -109,6 +114,15 @@ export interface BatchMoveMutation {
   failures: { slug: string; error: string }[];
   /** Union of every filesystem path touched across all moves, deduped. */
   changedFsPaths: string[];
+}
+
+export interface ReorderMutation extends BatchMoveMutation {
+  /** The group that was renumbered (a space key or a page slug). */
+  parentSlug: string;
+  /** Every sibling in that group, in the order written to disk. */
+  orderedSlugs: string[];
+  /** Sources placed at the requested position, by their post-move slug. */
+  placedSlugs: string[];
 }
 
 export interface RenameSpaceMutation {
@@ -227,6 +241,7 @@ export class Content {
         let archived = false;
         let archivedAt: string | undefined;
         let ownMtime: number | undefined;
+        let order: number | undefined;
         let isFolder = false;
         try {
           const parsed = await this.readParsed(indexPath);
@@ -237,6 +252,7 @@ export class Content {
             archivedAt = parsed.data.archivedAt;
             backing = indexPath;
             ownMtime = parsed.mtimeMs;
+            order = parsed.data.order;
             isFolder = isFolderPage(parsed.data);
           }
         } catch {
@@ -260,6 +276,7 @@ export class Content {
             archived,
             archivedAt,
             modifiedMs,
+            order,
             children,
           });
         }
@@ -272,6 +289,7 @@ export class Content {
         let archived = false;
         let archivedAt: string | undefined;
         let ownMtime: number | undefined;
+        let order: number | undefined;
         try {
           const parsed = await this.readParsed(fsPath);
           if (parsed) {
@@ -280,22 +298,19 @@ export class Content {
             archived = parsed.data.archived === true;
             archivedAt = parsed.data.archivedAt;
             ownMtime = parsed.mtimeMs;
+            order = parsed.data.order;
           }
         } catch {
           /* fall back to filename */
         }
         const modifiedMs = ownMtime ?? (await mtimeMs(fsPath));
         if (this.includeNode(filter, archived, 0)) {
-          nodes.push({ slug, id, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, children: [] });
+          nodes.push({ slug, id, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, order, children: [] });
         }
       }
     }
 
-    // Most-recently-modified first, falling back to title for a stable order
-    // when timestamps tie (e.g. a fresh checkout where mtimes are uniform).
-    nodes.sort(
-      (a, b) => b.modifiedMs - a.modifiedMs || a.title.localeCompare(b.title)
-    );
+    nodes.sort(compareNodes);
     return nodes;
   }
 
@@ -852,11 +867,7 @@ export class Content {
     sourceSlugs: string[],
     targetParentSlug: string | null
   ): Promise<BatchMoveMutation> {
-    const cleaned = [...new Set(sourceSlugs.map((s) => cleanSlug(s)).filter(Boolean))];
-    // Keep only "roots": a source that is not a descendant of another source.
-    const roots = cleaned.filter(
-      (slug) => !cleaned.some((other) => other !== slug && slug.startsWith(`${other}/`))
-    );
+    const roots = moveRoots(sourceSlugs);
 
     const moves: MoveMutation[] = [];
     const failures: { slug: string; error: string }[] = [];
@@ -877,6 +888,116 @@ export class Content {
     }
 
     return { moves, failures, changedFsPaths: uniquePaths(changedFsPaths) };
+  }
+
+  /**
+   * Place pages at an exact position inside a group — the operation behind a drop
+   * on one of the sidebar's insertion lines.
+   *
+   * `beforeSlug` names the sibling the sources should end up directly above; ""
+   * appends to the end of the group. Sources that live elsewhere are moved into
+   * `parentSlug` first (reusing {@link movePage}, so link rewriting and leaf→section
+   * promotion behave exactly as a plain move), which is why the sibling list is
+   * read only afterwards — a move can rename a source (collision suffix) or turn
+   * the parent into a section.
+   *
+   * The whole group is then renumbered from 1, including archived siblings: they
+   * are invisible in the live sidebar, but numbering them keeps a restored page in
+   * the place it was arranged into. Callers commit `changedFsPaths` themselves, so
+   * one drag lands as a single commit.
+   */
+  async reorderPages(
+    sourceSlugs: string[],
+    parentSlug: string,
+    beforeSlug = ""
+  ): Promise<ReorderMutation> {
+    const parent = cleanSlug(parentSlug);
+    if (!parent) {
+      throw new Error("Pages must live inside a space.");
+    }
+
+    const roots = moveRoots(sourceSlugs);
+    if (roots.length === 0) {
+      throw new Error("Missing source page.");
+    }
+    for (const slug of roots) {
+      if (parent === slug || parent.startsWith(`${slug}/`)) {
+        throw new Error("A page cannot be moved into itself or one of its children.");
+      }
+    }
+    if (!(await this.resolve(parent))) {
+      throw new Error("The destination page does not exist.");
+    }
+
+    const moves: MoveMutation[] = [];
+    const failures: { slug: string; error: string }[] = [];
+    const changedFsPaths: string[] = [];
+    // Post-move slugs of the sources, kept in the order they were dragged.
+    const placedSlugs: string[] = [];
+
+    for (const slug of roots) {
+      if (parentSlugOf(slug) === parent) {
+        placedSlugs.push(slug);
+        continue;
+      }
+      try {
+        const mutation = await this.movePage(slug, parent);
+        if (!mutation) {
+          failures.push({ slug, error: "Source page not found." });
+          continue;
+        }
+        moves.push(mutation);
+        changedFsPaths.push(...mutation.changedFsPaths);
+        placedSlugs.push(mutation.newSlug);
+      } catch (err) {
+        failures.push({ slug, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (placedSlugs.length === 0) {
+      return {
+        parentSlug: parent,
+        orderedSlugs: [],
+        placedSlugs: [],
+        moves,
+        failures,
+        changedFsPaths: uniquePaths(changedFsPaths),
+      };
+    }
+
+    const siblings = await this.childNodesOf(parent, "all");
+    const placed = new Set(placedSlugs);
+    const rest = siblings.filter((node) => !placed.has(node.slug));
+    // An anchor that was itself dragged (or has since vanished) is no anchor at
+    // all; falling through to the end of the group beats guessing.
+    const anchor = cleanSlug(beforeSlug);
+    const at = anchor ? rest.findIndex((node) => node.slug === anchor) : -1;
+    const index = at >= 0 ? at : rest.length;
+
+    const orderedSlugs = [
+      ...rest.slice(0, index).map((node) => node.slug),
+      ...placedSlugs,
+      ...rest.slice(index).map((node) => node.slug),
+    ];
+
+    const byslug = new Map(siblings.map((node) => [node.slug, node]));
+    for (const [i, slug] of orderedSlugs.entries()) {
+      const node = byslug.get(slug);
+      // A directory with no index.md has nowhere to keep an order; it is a rare
+      // half-page that the walk still lists, and skipping it leaves a gap in the
+      // numbering, which changes nothing about the resulting sequence.
+      if (!node || !node.fsPath.endsWith(".md")) continue;
+      if (await this.setOrder(node.fsPath, i + 1)) changedFsPaths.push(node.fsPath);
+    }
+
+    return {
+      parentSlug: parent,
+      orderedSlugs,
+      placedSlugs,
+      moves,
+      failures,
+      changedFsPaths: uniquePaths(changedFsPaths),
+    };
   }
 
   /** Rename a page's slug leaf within its current parent; suffixes on collision. */
@@ -1183,6 +1304,33 @@ export class Content {
     await fs.rename(conversion.from, conversion.to);
   }
 
+  /**
+   * The direct children of a page/space, ordered exactly as the sidebar shows
+   * them. Reads one directory instead of walking the whole KB like `tree()`.
+   * Empty when the slug does not resolve or is a leaf page (no children yet).
+   */
+  private async childNodesOf(parentSlug: string, filter: TreeFilter): Promise<PageNode[]> {
+    const clean = cleanSlug(parentSlug);
+    const fsPath = await this.resolve(clean);
+    if (!fsPath || !this.isSectionFsPath(fsPath)) return [];
+    return this.walk(path.dirname(fsPath), clean, filter);
+  }
+
+  /** Write `order` into a page's frontmatter. Returns false when already at that value. */
+  private async setOrder(fsPath: string, order: number): Promise<boolean> {
+    const raw = await fs.readFile(fsPath, "utf8");
+    parsePage(raw, fsPath);
+
+    const parsed = matter(raw);
+    const data = { ...parsed.data, order } as Record<string, unknown>;
+    const nextRaw = matter.stringify(parsed.content, data);
+    parsePage(nextRaw, fsPath);
+    if (nextRaw === raw) return false;
+
+    await fs.writeFile(fsPath, nextRaw, "utf8");
+    return true;
+  }
+
   private async updateArchiveMetadata(
     fsPath: string,
     archived: boolean,
@@ -1231,6 +1379,41 @@ Thumbs.db
 
 function cleanSlug(slug: string): string {
   return slug.replace(/^\/+|\/+$/g, "");
+}
+
+/** The parent slug of a page slug ("" for a space key). */
+function parentSlugOf(slug: string): string {
+  return cleanSlug(slug).split("/").slice(0, -1).join("/");
+}
+
+/**
+ * Normalize a drag selection to the sources a move should actually touch: cleaned,
+ * deduped, and with any source nested under another dropped — moving a folder
+ * already carries its children, so re-moving a child by its stale slug would fail.
+ */
+function moveRoots(sourceSlugs: string[]): string[] {
+  const cleaned = [...new Set(sourceSlugs.map((s) => cleanSlug(s)).filter(Boolean))];
+  return cleaned.filter(
+    (slug) => !cleaned.some((other) => other !== slug && slug.startsWith(`${other}/`))
+  );
+}
+
+/**
+ * Sibling order within one navigation group.
+ *
+ * Hand-placed siblings (frontmatter `order`, written by sidebar drag-and-drop)
+ * come first, ascending. Everything else keeps the recent-first default and
+ * follows them, so a page created or moved into an arranged group lands at the
+ * end of it rather than jumping over the arrangement. Titles break both ties, so
+ * a fresh checkout with uniform mtimes still renders in a stable order.
+ */
+function compareNodes(a: PageNode, b: PageNode): number {
+  if (a.order !== undefined && b.order !== undefined) {
+    return a.order - b.order || a.title.localeCompare(b.title);
+  }
+  if (a.order !== undefined) return -1;
+  if (b.order !== undefined) return 1;
+  return b.modifiedMs - a.modifiedMs || a.title.localeCompare(b.title);
 }
 
 /** Depth-first flatten of a navigation tree, parents before their children. */

@@ -17,6 +17,15 @@ export const FrontmatterSchema = z.object({
   id: z.string().optional(),
   tags: z.array(z.string()).optional(),
   summary: z.string().optional(),
+  /**
+   * Manual sibling position in the navigation, 1-based and ascending. Written by
+   * sidebar drag-and-drop reordering, which renumbers every sibling in the group
+   * it touches. Absent means "unplaced": those siblings keep the recent-first
+   * default and sort after the explicitly ordered ones (see Content.walk).
+   * Any number is accepted, so a fractional value can be hand-written to slot a
+   * page between two ordered siblings without renumbering them.
+   */
+  order: z.number().optional(),
   /** Optional emoji shown on the space card; only meaningful on a space's index.md. */
   icon: z.string().optional(),
   /**

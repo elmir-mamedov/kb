@@ -10,12 +10,32 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * The sidebar tree. `parentSlug` is the group being rendered (a space key at the
+ * top level) and is what the insertion lines report on a drop.
+ */
 function renderTree(
   nodes: PageNode[],
   activeSlug: string,
-  options: { archiveMode?: boolean; dragEnabled?: boolean; collapsible?: boolean } = {}
+  options: {
+    archiveMode?: boolean;
+    dragEnabled?: boolean;
+    collapsible?: boolean;
+    parentSlug?: string;
+  } = {}
 ): string {
   if (nodes.length === 0) return "";
+  const parentSlug = options.parentSlug ?? "";
+  // One zero-height insertion point above every row plus one closing the group,
+  // so document order matches the sequence of positions on screen — MOVE_SCRIPT
+  // relies on that to turn "the top edge of this row" into a drop target. Each is
+  // invisible until dragged at, so a tree at rest looks exactly as it did.
+  const dropLine = (before: string): string =>
+    options.dragEnabled && parentSlug
+      ? `<li class="drop-line" data-drop-line data-drop-parent="${escapeHtml(parentSlug)}"${
+          before ? ` data-drop-before="${escapeHtml(before)}"` : ""
+        }></li>`
+      : "";
   const items = nodes
     .map((n) => {
       const isActive = n.slug === activeSlug;
@@ -51,12 +71,15 @@ function renderTree(
         ? `<div class="tree-row">${marker}${folderIcon}${label}${treeMenu(n)}</div>`
         : label;
       const children = hasChildren
-        ? `<div class="children">${renderTree(n.children, activeSlug, options)}</div>`
+        ? `<div class="children">${renderTree(n.children, activeSlug, {
+            ...options,
+            parentSlug: n.slug,
+          })}</div>`
         : "";
-      return `<li data-tree-slug="${escapeHtml(n.slug)}">${row}${children}</li>`;
+      return `${dropLine(n.slug)}<li data-tree-slug="${escapeHtml(n.slug)}">${row}${children}</li>`;
     })
     .join("");
-  return `<ul>${items}</ul>`;
+  return `<ul>${items}${dropLine("")}</ul>`;
 }
 
 /**
@@ -297,6 +320,7 @@ function sidebarHtml(
   <nav class="tree">${renderTree(tree, activeSlug, {
     dragEnabled: !isArchiveView,
     collapsible: !isArchiveView,
+    parentSlug: spaceKey,
   })}</nav>
 </aside>
 <script>${SEARCH_SCRIPT}</script>`;
@@ -930,7 +954,7 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   </form>
   <section class="help-section">
     <h3>About Flux</h3>
-    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them, and use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, copy its link, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
+    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them: drop a page <em>onto</em> another one to nest it inside, or onto the line that appears <em>between</em> two pages to put it there &mdash; including the line at the top level, which lifts a child page back out to the space root. Use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, copy its link, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
   </section>
   <section class="help-section">
     <h3>Keyboard shortcuts</h3>
@@ -1168,10 +1192,14 @@ const EDITOR_SCRIPT = `
 
 const MOVE_SCRIPT = `
 (() => {
+  const treeEl = document.querySelector(".tree");
   const orderedLinks = Array.from(document.querySelectorAll(".tree a[data-drag-slug]"));
+  // Rows inside the tree are resolved from the pointer (see resolveDrop), which
+  // has to decide between "into this page" and "between these two" for the same
+  // pixel. Only targets outside the tree — the space name — keep own listeners.
   const dropTargets = Array.from(
     document.querySelectorAll("[data-drop-slug], [data-drop-root]")
-  );
+  ).filter((el) => !treeEl || !treeEl.contains(el));
   const errorEl = document.querySelector("[data-move-error]");
 
   // Multi-selection: shift-click selects an inclusive range from the anchor;
@@ -1214,9 +1242,14 @@ const MOVE_SCRIPT = `
     }, 5000);
   }
 
+  let activeLine = null;
+
   function clearTargets() {
-    for (const target of dropTargets) {
-      target.classList.remove("drop-target-active");
+    for (const target of dropTargets) target.classList.remove("drop-target-active");
+    for (const el of orderedLinks) el.classList.remove("drop-target-active");
+    if (activeLine) {
+      activeLine.classList.remove("drop-line-active");
+      activeLine = null;
     }
   }
 
@@ -1236,6 +1269,195 @@ const MOVE_SCRIPT = `
     // Pure no-op: every dragged item already lives directly under the target.
     if (dragSlugs.every((s) => sourceParent(s) === targetSlug)) return true;
     return false;
+  }
+
+  // --- Insertion lines --------------------------------------------------------
+  // Rows and insertion lines in document order, which is exactly their order on
+  // screen. Rebuilt at dragstart, so rows hidden inside a collapsed group are left
+  // out and "the line after this row" never points somewhere invisible.
+  let seq = [];
+  const EDGE = 6;
+
+  function isLine(el) {
+    return el.classList.contains("drop-line");
+  }
+
+  function buildSeq() {
+    seq = treeEl
+      ? Array.from(treeEl.querySelectorAll(".drop-line, .tree-row")).filter(
+          (el) => el.offsetParent !== null
+        )
+      : [];
+  }
+
+  function indexOfSlug(slug) {
+    return orderedLinks.findIndex((el) => slugOf(el) === slug);
+  }
+
+  /** The nearest insertion line before (dir -1) or after (dir 1) a row. */
+  function neighborLine(row, dir) {
+    let i = seq.indexOf(row);
+    if (i < 0) return null;
+    for (i += dir; i >= 0 && i < seq.length; i += dir) {
+      if (isLine(seq[i])) return seq[i];
+    }
+    return null;
+  }
+
+  /**
+   * What the pointer is over: an insertion line when it is within EDGE px of a
+   * row's top or bottom, the row itself (= move into that page) anywhere in
+   * between, or the line closing the tree once the pointer is past the last row.
+   * Lines are zero-height and paint through a pseudo-element, so they are never
+   * hit directly — a line drop is always inferred from the row edge under the
+   * cursor.
+   *
+   * Where two groups end at the same height — a nested group's closing line sits
+   * level with the line following its parent row — the row whose edge is being
+   * touched decides, which is why each is looked up in document order from that
+   * row: a group's own lines always neighbour its own rows. So the last nested
+   * child's bottom edge appends inside the nested group, while the top edge of the
+   * row below it, one pixel further down, lands in the outer one.
+   */
+  function resolveDrop(event) {
+    const node = event.target;
+    const row = node && node.closest ? node.closest(".tree-row") : null;
+    if (row && seq.indexOf(row) >= 0) {
+      const rect = row.getBoundingClientRect();
+      const edge = Math.min(EDGE, rect.height / 3);
+      const before = event.clientY - rect.top <= edge ? neighborLine(row, -1) : null;
+      if (before) return { line: before };
+      const after = rect.bottom - event.clientY <= edge ? neighborLine(row, 1) : null;
+      if (after) return { line: after };
+      const link = row.querySelector("a[data-drop-slug]");
+      return link ? { row: link } : null;
+    }
+
+    // Past the last row (the tree's trailing padding): append to the top level,
+    // which is the last line of all. Overshooting a drag aimed at the end of the
+    // sidebar is common, and it should land rather than fall through.
+    const rows = seq.filter((el) => !isLine(el));
+    const lastRow = rows[rows.length - 1];
+    const lines = seq.filter(isLine);
+    const lastLine = lines[lines.length - 1];
+    if (lastRow && lastLine && event.clientY > lastRow.getBoundingClientRect().bottom) {
+      return { line: lastLine };
+    }
+    return null;
+  }
+
+  function invalidLine(line) {
+    if (dragSlugs.length === 0) return true;
+    const parent = line.getAttribute("data-drop-parent") || "";
+    if (!parent) return true;
+    for (const s of dragSlugs) {
+      // Into itself or one of its own descendants.
+      if (parent === s || parent.indexOf(s + "/") === 0) return true;
+    }
+    // A lone page dropped on the line directly above or below itself stays put.
+    if (dragSlugs.length === 1) {
+      const link = orderedLinks[indexOfSlug(dragSlugs[0])];
+      const row = link ? link.closest(".tree-row") : null;
+      if (row && (line === neighborLine(row, -1) || line === neighborLine(row, 1))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function highlight(el, cls) {
+    if (el.classList.contains(cls)) return;
+    clearTargets();
+    el.classList.add(cls);
+    if (cls === "drop-line-active") activeLine = el;
+  }
+
+  async function post(url, body, failure) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        showError(result.error || failure);
+        return null;
+      }
+      return result;
+    } catch {
+      showError(failure);
+      return null;
+    }
+  }
+
+  /** Drop onto a page or the space name: re-parent, then land on the moved page. */
+  async function submitMove(target) {
+    const isRoot = target.hasAttribute("data-drop-root");
+    const targetSlug = isRoot ? "" : target.getAttribute("data-drop-slug") || "";
+    // Skip items already parented at the target — the server rejects no-ops.
+    const slugs = isRoot
+      ? dragSlugs.slice()
+      : dragSlugs.filter((s) => sourceParent(s) !== targetSlug);
+    if (slugs.length === 0) return;
+    const result = await post(
+      "/_move",
+      new URLSearchParams({
+        sourceSlugs: JSON.stringify(slugs),
+        targetKind: isRoot ? "root" : "page",
+        targetSlug,
+      }),
+      "Move failed."
+    );
+    if (!result) return;
+    if (result.error) {
+      // Partial success: show the note briefly, then land on a moved page.
+      showError(result.error);
+      window.setTimeout(() => {
+        window.location.href = result.url;
+      }, 2000);
+      return;
+    }
+    window.location.href = result.url;
+  }
+
+  /** Drop onto an insertion line: place the pages at that exact spot. */
+  async function submitReorder(line) {
+    const result = await post(
+      "/_reorder",
+      new URLSearchParams({
+        sourceSlugs: JSON.stringify(dragSlugs),
+        parentSlug: line.getAttribute("data-drop-parent") || "",
+        beforeSlug: line.getAttribute("data-drop-before") || "",
+      }),
+      "Could not reorder pages."
+    );
+    if (!result) return;
+    if (result.error) {
+      showError(result.error);
+      window.setTimeout(() => settle(result), 2000);
+      return;
+    }
+    settle(result);
+  }
+
+  /**
+   * Arranging pages must not navigate away — the reader keeps the page they are
+   * reading, and a reload is what re-renders the sidebar in its new order. The
+   * exception is the page they are on having moved: then follow it to its new URL.
+   */
+  function settle(result) {
+    const activeEl = document.querySelector(".tree a.active[data-drag-slug]");
+    const current = activeEl ? slugOf(activeEl) : "";
+    const moved = Array.isArray(result.moved) ? result.moved : [];
+    for (const m of moved) {
+      if (current === m.oldSlug || current.indexOf(m.oldSlug + "/") === 0) {
+        const next = m.newSlug + current.slice(m.oldSlug.length);
+        window.location.href = "/" + next.split("/").map(encodeURIComponent).join("/");
+        return;
+      }
+    }
+    window.location.reload();
   }
 
   orderedLinks.forEach((link, index) => {
@@ -1266,7 +1488,11 @@ const MOVE_SCRIPT = `
       let slugs = selected.has(slug) && selected.size > 0 ? Array.from(selected) : [slug];
       // Drop descendants of another dragged slug — the ancestor carries them.
       slugs = slugs.filter((s) => !slugs.some((o) => o !== s && s.startsWith(o + "/")));
+      // Sidebar order, so a multi-page drop lands in the order it was shown in
+      // rather than the order the pages happened to be ctrl-clicked.
+      slugs.sort((a, b) => indexOfSlug(a) - indexOfSlug(b));
       dragSlugs = slugs;
+      buildSeq();
       for (const el of orderedLinks) {
         if (dragSlugs.includes(slugOf(el))) el.classList.add("drag-source");
       }
@@ -1293,7 +1519,7 @@ const MOVE_SCRIPT = `
       }
 
       event.preventDefault();
-      target.classList.add("drop-target-active");
+      highlight(target, "drop-target-active");
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = "move";
       }
@@ -1303,48 +1529,48 @@ const MOVE_SCRIPT = `
       target.classList.remove("drop-target-active");
     });
 
-    target.addEventListener("drop", async (event) => {
+    target.addEventListener("drop", (event) => {
       if (invalidDrop(target)) return;
-
       event.preventDefault();
       clearTargets();
+      submitMove(target);
+    });
+  }
 
-      const isRoot = target.hasAttribute("data-drop-root");
-      const targetSlug = isRoot ? "" : target.getAttribute("data-drop-slug") || "";
-      // Skip items already parented at the target — the server rejects no-ops.
-      const slugs = isRoot
-        ? dragSlugs.slice()
-        : dragSlugs.filter((s) => sourceParent(s) !== targetSlug);
-      if (slugs.length === 0) return;
-      const body = new URLSearchParams({
-        sourceSlugs: JSON.stringify(slugs),
-        targetKind: isRoot ? "root" : "page",
-        targetSlug,
-      });
-
-      try {
-        const response = await fetch("/_move", {
-          method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body,
-        });
-        const result = await response.json();
-        if (!response.ok || !result.ok) {
-          showError(result.error || "Move failed.");
-          return;
-        }
-        if (result.error) {
-          // Partial success: show the note briefly, then land on a moved page.
-          showError(result.error);
-          window.setTimeout(() => {
-            window.location.href = result.url;
-          }, 2000);
-          return;
-        }
-        window.location.href = result.url;
-      } catch {
-        showError("Move failed.");
+  // One handler for the whole tree: which of the two gestures a drop is — into a
+  // page, or between two of them — depends on where in a row the pointer sits, so
+  // it cannot be split across per-element listeners.
+  if (treeEl) {
+    treeEl.addEventListener("dragover", (event) => {
+      const hit = resolveDrop(event);
+      if (!hit) {
+        clearTargets();
+        return;
       }
+      if (hit.line ? invalidLine(hit.line) : invalidDrop(hit.row)) {
+        clearTargets();
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      if (hit.line) highlight(hit.line, "drop-line-active");
+      else highlight(hit.row, "drop-target-active");
+    });
+
+    treeEl.addEventListener("dragleave", (event) => {
+      if (!treeEl.contains(event.relatedTarget)) clearTargets();
+    });
+
+    treeEl.addEventListener("drop", (event) => {
+      const hit = resolveDrop(event);
+      if (!hit) return;
+      if (hit.line ? invalidLine(hit.line) : invalidDrop(hit.row)) return;
+      event.preventDefault();
+      clearTargets();
+      if (hit.line) submitReorder(hit.line);
+      else submitMove(hit.row);
     });
   }
 
@@ -2498,6 +2724,10 @@ a:hover{text-decoration:underline}
   margin:0 0 14px; padding:8px 10px; border:1px solid var(--error-border);
   border-radius:6px; background:var(--error-bg); color:var(--error-fg); font-size:13px;
 }
+/* The trailing padding is the overshoot room for a drag aimed at the end of the
+   tree: it belongs to the nav, so MOVE_SCRIPT still sees the drag and reads it as
+   "append to the space root" instead of letting the page slip past the last row. */
+.tree{padding-bottom:24px}
 .tree ul{list-style:none; margin:0; padding:0}
 .tree .children{margin-left:12px; border-left:1px solid var(--line); padding-left:8px}
 .tree a,.tree-label{display:block; padding:3px 6px; border-radius:6px; color:var(--fg-secondary); font-size:14px; overflow-wrap:anywhere; user-select:none}
@@ -2516,6 +2746,21 @@ a:hover{text-decoration:underline}
 body.dragging-page .space-current{
   outline:1px dashed var(--line); outline-offset:2px; border-radius:4px;
 }
+/* Insertion points between rows. Zero height so the tree keeps its rhythm, and
+   the indicator is drawn by a pseudo-element, so the pointer is never "over" a
+   line — MOVE_SCRIPT picks one from the row edge under the cursor instead. The
+   line inherits its group's indentation, which is what tells the reader which
+   group it would drop into where two of them meet at the same height (the
+   indicator moves between the two as the cursor crosses that boundary). */
+/* pointer-events:none is load-bearing: the 2px indicator below straddles the
+   boundary between two rows, and it would otherwise win the hit test over the
+   very row edge the pointer is aiming at, swallowing the dragover. */
+.tree .drop-line{position:relative; height:0; pointer-events:none}
+.tree .drop-line::before{
+  content:""; position:absolute; left:0; right:2px; top:-1px; height:2px;
+  border-radius:2px; background:var(--accent); opacity:0;
+}
+.tree .drop-line.drop-line-active::before{opacity:1}
 .tree-toggle{
   flex:0 0 auto; width:18px; height:24px; margin:0; padding:0; border:0;
   background:transparent; cursor:pointer; color:var(--muted);

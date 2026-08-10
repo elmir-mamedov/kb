@@ -362,6 +362,58 @@ test("tree rows open with exactly one marker glyph, so carets and dots share a c
   }
 });
 
+test("issue #2: every group gets an insertion line above each row and one closing it", () => {
+  const html = layout(
+    pageView({
+      tree: [
+        node({
+          slug: "flux/handbook",
+          title: "Handbook",
+          isSection: true,
+          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
+        }),
+        node({ slug: "flux/notes", title: "Notes" }),
+      ],
+    })
+  );
+
+  // Top level: above handbook, above notes, and one appending to the space root.
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux" data-drop-before="flux\/handbook"><\/li><li data-tree-slug="flux\/handbook">/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux" data-drop-before="flux\/notes"><\/li><li data-tree-slug="flux\/notes">/);
+  // The closing line of a group carries no anchor — that means "append here".
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux"><\/li><\/ul>/);
+  // A child group reports its own parent, so a drop there nests rather than lifts.
+  assert.match(html, /data-drop-parent="flux\/handbook" data-drop-before="flux\/handbook\/intro"/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux\/handbook"><\/li>/);
+
+  // Zero height, invisible until targeted: a tree at rest looks untouched. The
+  // 2px indicator straddles a row boundary, so it must not take the hit test from
+  // the row edge the pointer is aiming at — that would swallow the dragover.
+  assert.match(html, /\.tree \.drop-line\{position:relative; height:0; pointer-events:none\}/);
+  assert.match(html, /\.tree \.drop-line::before\{[^}]*opacity:0/);
+  assert.match(html, /\.tree \.drop-line\.drop-line-active::before\{opacity:1\}/);
+});
+
+test("issue #2: the archive view renders no insertion lines, since it cannot drag", () => {
+  const html = layout(
+    pageView({
+      isArchiveView: true,
+      tree: [node({ slug: "flux/notes", title: "Notes", archived: true })],
+    })
+  );
+  assert.doesNotMatch(html, /data-drop-line/);
+});
+
+test("issue #2: a line drop posts to /_reorder and stays on the current page", () => {
+  const html = layout(pageView());
+  assert.match(html, /fetch\(url, \{/);
+  assert.match(html, /"\/_reorder",/);
+  assert.match(html, /parentSlug: line\.getAttribute\("data-drop-parent"\)/);
+  assert.match(html, /beforeSlug: line\.getAttribute\("data-drop-before"\)/);
+  // Arranging pages reloads in place; only a page that moved is followed.
+  assert.match(html, /window\.location\.reload\(\)/);
+});
+
 test("copy link: a toast is created up front and rises from below on copy", () => {
   const html = layout(pageView());
   // Built on init, not on first use, so the aria-live region pre-exists its message.

@@ -16,6 +16,7 @@ import {
   type DeleteMutation,
   type MoveMutation,
   type PageNode,
+  type ReorderMutation,
 } from "./content.js";
 import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
@@ -334,6 +335,21 @@ function moveBatchCommitMessage(moves: MoveMutation[]): string {
   if (moves.length === 1) return moveCommitMessage(moves[0]);
   const parent = moves[0].newSlug.split("/").slice(0, -1).join("/") || "root";
   return `Move ${moves.length} pages to ${parent} via web`;
+}
+
+/**
+ * One drag onto an insertion line can both re-parent and renumber, so the message
+ * names whichever half is the point: a plain arrangement inside one group, or the
+ * move that carried the page there (the renumbering rides along in the same commit).
+ */
+function reorderCommitMessage(mutation: ReorderMutation): string {
+  if (mutation.moves.length === 0) {
+    return `Reorder pages in ${mutation.parentSlug} via web`;
+  }
+  if (mutation.moves.length === 1) {
+    return `Move ${mutation.moves[0].oldSlug} to ${mutation.moves[0].newSlug} via web`;
+  }
+  return `Move ${mutation.moves.length} pages to ${mutation.parentSlug} via web`;
 }
 
 function errorMessage(err: unknown): string {
@@ -892,25 +908,33 @@ app.post("/_delete-space/*", async (req, reply) => {
   return reply.redirect("/", 303);
 });
 
-app.post("/_move", async (req, reply) => {
-  const rawSlugs = formString(req.body, "sourceSlugs");
-  const singleSlug = formString(req.body, "sourceSlug") ?? "";
-  const targetKind = formString(req.body, "targetKind") ?? "";
-  const targetSlug = formString(req.body, "targetSlug") ?? "";
-
-  // Accept either a JSON array of sources (multi-drag) or a lone sourceSlug.
-  let sourceSlugs: string[] = [];
+/**
+ * The dragged pages a move/reorder request names: either a JSON array (multi-drag)
+ * or a lone `sourceSlug`. Returns null when the array is unparseable, which the
+ * caller reports as a bad request rather than treating as "nothing selected".
+ */
+function parseSourceSlugs(body: unknown): string[] | null {
+  const rawSlugs = formString(body, "sourceSlugs");
   if (rawSlugs) {
     try {
       const parsed: unknown = JSON.parse(rawSlugs);
-      if (Array.isArray(parsed)) {
-        sourceSlugs = parsed.filter((s): s is string => typeof s === "string" && s !== "");
-      }
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((s): s is string => typeof s === "string" && s !== "");
     } catch {
-      return reply.code(400).send({ ok: false, error: "Invalid source list." });
+      return null;
     }
-  } else if (singleSlug) {
-    sourceSlugs = [singleSlug];
+  }
+  const singleSlug = formString(body, "sourceSlug") ?? "";
+  return singleSlug ? [singleSlug] : [];
+}
+
+app.post("/_move", async (req, reply) => {
+  const targetKind = formString(req.body, "targetKind") ?? "";
+  const targetSlug = formString(req.body, "targetSlug") ?? "";
+
+  const sourceSlugs = parseSourceSlugs(req.body);
+  if (sourceSlugs === null) {
+    return reply.code(400).send({ ok: false, error: "Invalid source list." });
   }
 
   if (sourceSlugs.length === 0) {
@@ -962,6 +986,68 @@ app.post("/_move", async (req, reply) => {
     moved: result.moves.map((m) => ({ oldSlug: m.oldSlug, newSlug: m.newSlug })),
     slug: result.moves[0].newSlug,
     url: pagePath(result.moves[0].newSlug),
+    ...(failureNote ? { error: failureNote } : {}),
+  });
+});
+
+/**
+ * Place pages at an exact spot in a group — the sidebar's insertion-line drop.
+ * `parentSlug` is the group (a space key for the top level), `beforeSlug` the
+ * sibling to land above, empty to append. Re-parenting and renumbering are one
+ * request because one drop can imply both, and they must land in one commit.
+ *
+ * Fetch-driven like `/_move`, but it answers with the moves rather than a URL to
+ * follow: arranging a page the reader is not currently on must not navigate away,
+ * so the client reloads in place and only follows a slug that actually changed.
+ */
+app.post("/_reorder", async (req, reply) => {
+  const parentSlug = formString(req.body, "parentSlug") ?? "";
+  const beforeSlug = formString(req.body, "beforeSlug") ?? "";
+
+  const sourceSlugs = parseSourceSlugs(req.body);
+  if (sourceSlugs === null) {
+    return reply.code(400).send({ ok: false, error: "Invalid source list." });
+  }
+  if (sourceSlugs.length === 0) {
+    return reply.code(400).send({ ok: false, error: "Missing source page." });
+  }
+  if (!parentSlug) {
+    return reply.code(400).send({ ok: false, error: "Missing destination group." });
+  }
+
+  let result: ReorderMutation;
+  try {
+    result = await content.reorderPages(sourceSlugs, parentSlug, beforeSlug);
+  } catch (err) {
+    return reply.code(400).send({ ok: false, error: errorMessage(err) });
+  }
+
+  if (result.orderedSlugs.length === 0) {
+    const error = result.failures[0]?.error ?? "Source page not found.";
+    return reply.code(result.failures.length ? 400 : 404).send({ ok: false, error });
+  }
+
+  try {
+    await git.commitMovedPaths(result.changedFsPaths, reorderCommitMessage(result));
+  } catch (err) {
+    return reply.code(500).send({
+      ok: false,
+      error: `Reordered, but Git commit failed: ${errorMessage(err)}`,
+    });
+  }
+
+  const total = result.placedSlugs.length + result.failures.length;
+  const failureNote = result.failures.length
+    ? `${result.failures.length} of ${total} could not be moved: ${result.failures
+        .map((f) => f.error)
+        .join("; ")}`
+    : undefined;
+
+  return reply.send({
+    ok: true,
+    moved: result.moves.map((m) => ({ oldSlug: m.oldSlug, newSlug: m.newSlug })),
+    parentSlug: result.parentSlug,
+    orderedSlugs: result.orderedSlugs,
     ...(failureNote ? { error: failureNote } : {}),
   });
 });

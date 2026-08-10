@@ -484,6 +484,170 @@ test("issue #3: moving a section rewrites links to its descendants too", async (
   }
 });
 
+/** Sidebar order of a group, by slug leaf. */
+async function orderOf(content: Content, parentSlug: string): Promise<string[]> {
+  const tree = await content.tree("live");
+  const parts = parentSlug.split("/");
+  let nodes = tree;
+  let found: (typeof tree)[number] | undefined;
+  for (const _ of parts) {
+    found = nodes.find((n) => parentSlug === n.slug || parentSlug.startsWith(`${n.slug}/`));
+    if (!found) return [];
+    nodes = found.children;
+  }
+  return nodes.map((n) => n.slug.split("/").at(-1)!);
+}
+
+test("issue #2: reorderPages arranges siblings, and the tree renders that order", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    // Created oldest-first, so the recent-first default lists them backwards.
+    for (const title of ["Alpha", "Beta", "Gamma"]) {
+      await content.createPage("docs", title, `# ${title}\n`);
+    }
+    assert.deepEqual(await orderOf(content, "docs"), ["gamma", "beta", "alpha"]);
+
+    // Drag gamma down onto the line above alpha: [beta, gamma, alpha].
+    const result = await content.reorderPages(["docs/gamma"], "docs", "docs/alpha");
+    assert.deepEqual(result.orderedSlugs, ["docs/beta", "docs/gamma", "docs/alpha"]);
+    assert.equal(result.moves.length, 0, "a same-parent reorder moves no files");
+    assert.deepEqual(await orderOf(content, "docs"), ["beta", "gamma", "alpha"]);
+
+    // The arrangement is on disk, 1-based, and survives a fresh read.
+    const beta = await content.loadRaw("docs/beta");
+    assert.match(beta!.raw, /^order: 1$/m);
+    assert.deepEqual(await orderOf(new Content(kb.dir), "docs"), ["beta", "gamma", "alpha"]);
+
+    // An empty anchor appends: beta goes last.
+    await content.reorderPages(["docs/beta"], "docs", "");
+    assert.deepEqual(await orderOf(content, "docs"), ["gamma", "alpha", "beta"]);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: a drop on a top-level line lifts a child page out to the space root", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Area", "# Area\n");
+    await content.createPage("docs", "Notes", "# Notes\n");
+    await content.createPage("docs/area", "Deep", "# Deep\n");
+    assert.deepEqual(await orderOf(content, "docs"), ["area", "notes"]);
+
+    // Drop docs/area/deep on the line above docs/notes at the top level.
+    const result = await content.reorderPages(["docs/area/deep"], "docs", "docs/notes");
+    assert.deepEqual(
+      result.moves.map((m) => [m.oldSlug, m.newSlug]),
+      [["docs/area/deep", "docs/deep"]],
+      "leaving its parent is a real move, reported so the client can follow it"
+    );
+    assert.deepEqual(result.placedSlugs, ["docs/deep"], "positioned by its post-move slug");
+    // It lands at the requested spot — directly above notes — and area, having
+    // lost the descendant that kept it at the top, follows on recency.
+    assert.deepEqual(await orderOf(content, "docs"), ["deep", "notes", "area"]);
+    assert.equal(await pathExists(path.join(kb.dir, "docs", "deep.md")), true);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: reorderPages keeps a multi-page drop in the order it was given", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    for (const title of ["One", "Two", "Three", "Four"]) {
+      await content.createPage("docs", title, `# ${title}\n`);
+    }
+
+    await content.reorderPages(["docs/two", "docs/four"], "docs", "docs/one");
+    const order = await orderOf(content, "docs");
+    assert.deepEqual(order.slice(order.indexOf("two")), ["two", "four", "one"]);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: an arranged group keeps its shape when a new page joins it", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    for (const title of ["Alpha", "Beta"]) {
+      await content.createPage("docs", title, `# ${title}\n`);
+    }
+    await content.reorderPages(["docs/alpha"], "docs", "docs/beta");
+    assert.deepEqual(await orderOf(content, "docs"), ["alpha", "beta"]);
+
+    // Unplaced pages follow the arranged ones rather than jumping to the top,
+    // so a new page cannot silently rearrange what the reader put in order.
+    await content.createPage("docs", "Fresh", "# Fresh\n");
+    assert.deepEqual(await orderOf(content, "docs"), ["alpha", "beta", "fresh"]);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: reorderPages refuses to drop a page inside itself", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Area", "# Area\n");
+    await content.createPage("docs/area", "Deep", "# Deep\n");
+
+    await assert.rejects(
+      () => content.reorderPages(["docs/area"], "docs/area/deep", ""),
+      /cannot be moved into itself/
+    );
+    await assert.rejects(() => content.reorderPages(["docs/area"], "", ""), /inside a space/);
+    await assert.rejects(
+      () => content.reorderPages(["docs/area"], "docs/nope", ""),
+      /does not exist/
+    );
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: an archived sibling is numbered too, so restoring keeps its place", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    for (const title of ["Alpha", "Beta", "Gamma"]) {
+      await content.createPage("docs", title, `# ${title}\n`);
+    }
+    await content.updateArchive("docs/beta", true);
+
+    // Arranging the live pages numbers the hidden one along with them.
+    const result = await content.reorderPages(["docs/alpha"], "docs", "docs/gamma");
+    assert.ok(result.orderedSlugs.includes("docs/beta"), "the archived sibling is numbered too");
+
+    const beta = await content.loadRaw("docs/beta");
+    assert.match(beta!.raw, /^order: \d+$/m);
+    // Invisible in the live sidebar, which shows the rest in the arranged order.
+    assert.deepEqual(
+      await orderOf(content, "docs"),
+      result.orderedSlugs.filter((s) => s !== "docs/beta").map((s) => s.split("/").at(-1)),
+    );
+
+    // Restoring it puts it back in the slot it was numbered into, rather than at
+    // the top where its freshly-touched mtime would otherwise have placed it.
+    await content.updateArchive("docs/beta", false);
+    assert.deepEqual(
+      await orderOf(content, "docs"),
+      result.orderedSlugs.map((s) => s.split("/").at(-1)),
+    );
+  } finally {
+    await kb.cleanup();
+  }
+});
+
 test("issue #3: folders and spaces also get a stable id", async () => {
   const kb: TempKb = await makeTempKb();
   try {
