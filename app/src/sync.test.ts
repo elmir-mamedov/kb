@@ -179,7 +179,10 @@ test("a space with no remote is skipped rather than failing", async () => {
   try {
     const content = new Content(kb.dir);
     const mutation = await content.createSpace("Solo");
-    const sync = quietSync(kb.dir);
+    // Capture the log rather than muting it: silence is the point of this test.
+    // A space that lives on one machine is a normal setup, not a broken one.
+    const logged: string[] = [];
+    const sync = makeSync(kb.dir, { debounceMs: 60_000, log: (m) => void logged.push(m) });
     const g = makeGit(kb.dir, (repoRoot) => sync.notifyCommit(repoRoot));
     await g.initSpaceRepo(mutation.slug);
     await g.commitFiles(mutation.changedFsPaths ?? [mutation.fsPath], "Create space via test");
@@ -194,7 +197,45 @@ test("a space with no remote is skipped rather than failing", async () => {
 
     const localLog = await git(path.join(kb.dir, mutation.slug), "log", "--oneline");
     assert.match(localLog, /Create note via test/);
+    assert.deepEqual(logged, [], "expected a remote-less space to sync silently");
   } finally {
     await kb.cleanup();
+  }
+});
+
+test("a push that the rebase cannot rescue reports the push error, not the rebase's", async () => {
+  const kb = await makeTempKb();
+  const elsewhere = await makeTempKb();
+  try {
+    const { content, slug, repo, bare } = await seedSpaceWithRemote(kb, elsewhere, "Engineering");
+
+    // Machine B publishes a conflicting index.md, so the rebase behind the retry
+    // is guaranteed to fail and leave the original rejection as the real story.
+    const other = await cloneElsewhere(elsewhere, bare, "machine-b");
+    await fs.writeFile(path.join(other, "index.md"), "# Machine B version\n");
+    await git(other, "add", "-A");
+    await git(other, "commit", "-m", "Rewrite index on machine B");
+    await git(other, "push");
+
+    await fs.writeFile(path.join(repo, "index.md"), "# Machine A version\n");
+    await git(repo, "add", "-A");
+    await git(repo, "commit", "-m", "Rewrite index on machine A");
+
+    const logged: string[] = [];
+    const sync = makeSync(kb.dir, { debounceMs: 60_000, log: (m) => void logged.push(m) });
+    const g = makeGit(kb.dir, (repoRoot) => sync.notifyCommit(repoRoot));
+
+    const created = await content.createPage(slug, "Note", "# Note\n");
+    await g.commitFiles([created.fsPath], "Create note via test");
+    await sync.flush();
+    sync.stop();
+
+    assert.ok(
+      logged.some((m) => m.startsWith("push failed for ")),
+      `expected the push failure to be reported, got ${JSON.stringify(logged)}`
+    );
+  } finally {
+    await kb.cleanup();
+    await elsewhere.cleanup();
   }
 });

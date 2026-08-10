@@ -148,13 +148,21 @@ export function makeSync(kbDir: string, options: SyncOptions = {}): Sync {
    * Push, and on rejection assume the other machine got there first: rebase onto
    * the remote and retry exactly once. Anything still failing is left for the
    * next commit rather than retried in a loop.
+   *
+   * The first rejection is reported only once the retry is off the table, since
+   * on the common "other machine got there first" path it is not a failure at
+   * all. Reporting it then matters: a rejection the rebase cannot fix says why
+   * the push lost, where the rebase's own error only says what happened next.
    */
   async function pushRepo(repoRoot: string): Promise<boolean> {
     try {
       await runGit(repoRoot, ["push"]);
       return true;
-    } catch {
-      if (!(await pullRepo(repoRoot))) return false;
+    } catch (rejected) {
+      if (!(await pullRepo(repoRoot))) {
+        log(`push failed for ${path.basename(repoRoot)} — ${message(rejected)}`);
+        return false;
+      }
       try {
         await runGit(repoRoot, ["push"]);
         return true;
@@ -165,9 +173,19 @@ export function makeSync(kbDir: string, options: SyncOptions = {}): Sync {
     }
   }
 
-  /** Append a push to the serial chain, swallowing failures. */
+  /**
+   * Append a push to the serial chain, swallowing failures. Remote-less repos
+   * are dropped here rather than in {@link notifyCommit}, which is synchronous:
+   * they are perfectly normal — a space that lives on one machine — and pushing
+   * them would only produce noise about a destination that was never meant to
+   * exist. Mirrors the same filter {@link syncableRepos} applies to pulls.
+   */
   function queuePush(repoRoot: string): void {
-    running = running.then(() => pushRepo(repoRoot)).catch(() => {});
+    running = running
+      .then(async () => {
+        if (await hasRemote(repoRoot)) await pushRepo(repoRoot);
+      })
+      .catch(() => {});
   }
 
   async function pullAll(): Promise<void> {
