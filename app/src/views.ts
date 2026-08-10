@@ -1748,8 +1748,8 @@ const NOTES_SCRIPT = `
    * Returns false when the quote is gone, so the caller can degrade instead of
    * throwing.
    */
-  function markQuote(block, quote, id) {
-    const wanted = normalize(quote);
+  function markQuote(block, note) {
+    const wanted = normalize(note.quote);
     if (!wanted) return false;
 
     // Collect the whole walk before mutating: splitText() inserts siblings the
@@ -1802,8 +1802,10 @@ const NOTES_SCRIPT = `
       const middle = run.start > 0 ? node.splitText(run.start) : node;
       if (end - run.start < middle.nodeValue.length) middle.splitText(end - run.start);
       const mark = document.createElement("mark");
-      mark.className = "note-mark";
-      mark.setAttribute("data-note-mark", id);
+      // The kind rides on the highlight itself: a task asks for a change and is
+      // coloured for it, a remark is only context.
+      mark.className = "note-mark is-" + note.kind;
+      mark.setAttribute("data-note-mark", note.id);
       middle.parentNode.insertBefore(mark, middle);
       mark.appendChild(middle);
       marked = true;
@@ -1846,69 +1848,194 @@ const NOTES_SCRIPT = `
 
       block.classList.add("has-note");
       const kinds = present.map((id) => byId.get(id).kind);
+      // One pin stands for every note on the block, so a single task among
+      // remarks colours it: the block has something waiting on it either way.
+      const allRemarks = kinds.every((kind) => kind === "remark");
       const pin = pinFor(block);
-      pin.classList.toggle("is-remark", kinds.every((kind) => kind === "remark"));
+      pin.classList.toggle("is-remark", allRemarks);
+      pin.classList.toggle("is-task", !allRemarks);
       pin.setAttribute("aria-label", present.length + " note" + (present.length === 1 ? "" : "s"));
       pin.title = present.length === 1 ? "1 note" : present.length + " notes";
 
       for (const id of present) {
         const note = byId.get(id);
-        if (note.quote && !markQuote(block, note.quote, id)) note.drifted = true;
+        if (note.quote && !markQuote(block, note)) note.drifted = true;
       }
     }
+  }
+
+  // --- the controls shared by writing and rewriting --------------------------
+
+  /**
+   * The Task/Remark switch. The composer and the in-place editor share it, so a
+   * note can be re-typed as the other kind with the same two words it was first
+   * typed with. Callers read the kind() getter when they submit rather than
+   * tracking the choice themselves.
+   */
+  function kindPicker(current) {
+    const element = document.createElement("div");
+    element.className = "note-kinds";
+    let kind = current === "remark" ? "remark" : "task";
+    for (const option of [["task", "Task"], ["remark", "Remark"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className =
+        "note-kind-option is-" + option[0] + (option[0] === kind ? " is-selected" : "");
+      button.textContent = option[1];
+      button.title =
+        option[0] === "task" ? "Something an agent should change" : "Context, not an instruction";
+      button.addEventListener("click", () => {
+        kind = option[0];
+        for (const sibling of element.children) {
+          sibling.classList.toggle("is-selected", sibling === button);
+        }
+      });
+      element.appendChild(button);
+    }
+    return { element: element, kind: () => kind };
+  }
+
+  /** The note text box, prefilled when an existing note is being rewritten. */
+  function noteField(text) {
+    const field = document.createElement("textarea");
+    field.className = "note-input";
+    field.rows = 3;
+    field.value = text;
+    field.placeholder = "What should change here?";
+    return field;
+  }
+
+  function actionButton(label, tone) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button " + tone;
+    button.textContent = label;
+    return button;
   }
 
   // --- the note popover ----------------------------------------------------
 
   let popover = null;
+  let popoverAnchor = null;
 
   function closePopover() {
     if (!popover) return;
     popover.remove();
     popover = null;
+    popoverAnchor = null;
     const active = article.querySelectorAll(".note-mark.is-active");
     for (const mark of active) mark.classList.remove("is-active");
   }
 
+  /**
+   * One note in the popover, drawn either for reading or for editing its text
+   * and kind in place. Both modes come from the same function so the head —
+   * kind, age, author — is identical either way and only the part below it
+   * swaps; editing a note is not a different panel, it is the same card.
+   */
   function noteCard(note) {
     const card = document.createElement("div");
     card.className = "note-card";
 
-    const head = document.createElement("div");
-    head.className = "note-card-head";
-    const kind = document.createElement("span");
-    kind.className = "note-kind" + (note.kind === "remark" ? " is-remark" : "");
-    kind.textContent = note.kind === "remark" ? "Remark" : "Task";
-    head.appendChild(kind);
-    const when = document.createElement("span");
-    when.className = "note-when";
-    when.textContent = [relativeTime(note.at), note.by].filter(Boolean).join(" · ");
-    head.appendChild(when);
-    card.appendChild(head);
+    const head = () => {
+      const row = document.createElement("div");
+      row.className = "note-card-head";
+      const kind = document.createElement("span");
+      kind.className = "note-kind is-" + note.kind;
+      kind.textContent = note.kind === "remark" ? "Remark" : "Task";
+      row.appendChild(kind);
+      const when = document.createElement("span");
+      when.className = "note-when";
+      when.textContent = [relativeTime(note.at), note.by].filter(Boolean).join(" · ");
+      row.appendChild(when);
+      return row;
+    };
 
-    // A quote is shown here only when it could not be highlighted in the prose,
-    // where it would otherwise be the one thing pointing at what drifted.
-    if (note.quote && note.drifted) {
-      const quote = document.createElement("div");
-      quote.className = "note-quote";
-      quote.textContent = "\\u201c" + note.quote + "\\u201d";
-      card.appendChild(quote);
-    }
+    const draw = (editing) => {
+      card.textContent = "";
+      card.appendChild(head());
 
-    const body = document.createElement("div");
-    body.className = "note-text";
-    body.textContent = note.text;
-    card.appendChild(body);
+      // A quote is shown here only when it could not be highlighted in the prose,
+      // where it would otherwise be the one thing pointing at what drifted.
+      if (note.quote && note.drifted) {
+        const quote = document.createElement("div");
+        quote.className = "note-quote";
+        quote.textContent = "\\u201c" + note.quote + "\\u201d";
+        card.appendChild(quote);
+      }
 
-    const resolve = document.createElement("button");
-    resolve.type = "button";
-    resolve.className = "button secondary note-resolve";
-    resolve.textContent = "Resolve";
-    resolve.addEventListener("click", () => {
-      resolve.disabled = true;
-      send({ op: "resolve", noteId: note.id }, resolve);
-    });
-    card.appendChild(resolve);
+      const actions = document.createElement("div");
+      actions.className = "note-card-actions";
+
+      if (editing) {
+        const field = noteField(note.text);
+        card.appendChild(field);
+
+        const picker = kindPicker(note.kind);
+        actions.appendChild(picker.element);
+
+        const cancel = actionButton("Cancel", "secondary");
+        cancel.addEventListener("click", (event) => swap(false, event));
+        actions.appendChild(cancel);
+
+        const save = actionButton("Save", "primary");
+        const submit = () => {
+          const text = field.value.trim();
+          if (!text) {
+            field.focus();
+            return;
+          }
+          save.disabled = true;
+          send({ op: "edit", noteId: note.id, text: text, kind: picker.kind() }, save);
+        };
+        save.addEventListener("click", submit);
+        actions.appendChild(save);
+
+        card.appendChild(actions);
+        field.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submit();
+          // Escape backs out of the editor and nothing more — swap() keeps the
+          // keypress from the document handler, which would close the popover.
+          if (event.key === "Escape") swap(false, event);
+        });
+        field.focus();
+        return;
+      }
+
+      const body = document.createElement("div");
+      body.className = "note-text";
+      body.textContent = note.text;
+      card.appendChild(body);
+
+      const edit = actionButton("Edit", "secondary");
+      edit.addEventListener("click", (event) => swap(true, event));
+      actions.appendChild(edit);
+
+      const resolve = actionButton("Resolve", "secondary");
+      resolve.addEventListener("click", () => {
+        resolve.disabled = true;
+        send({ op: "resolve", noteId: note.id }, resolve);
+      });
+      actions.appendChild(resolve);
+
+      card.appendChild(actions);
+    };
+
+    /**
+     * Change mode, then re-pin the popover for the height it now wants.
+     *
+     * The click that got us here is stopped short of the document: redrawing
+     * detaches the very button that was clicked, and the outside-click handler
+     * would then find no popover above that orphan and close the card out from
+     * under the editor it just opened.
+     */
+    const swap = (editing, event) => {
+      if (event) event.stopPropagation();
+      draw(editing);
+      reposition();
+    };
+
+    draw(false);
     return card;
   }
 
@@ -1921,8 +2048,18 @@ const NOTES_SCRIPT = `
     popover.className = "note-popover";
     popover.setAttribute("role", "dialog");
     for (const note of shown) popover.appendChild(noteCard(note));
+    popoverAnchor = anchor;
     document.body.appendChild(popover);
     place(popover, anchor.getBoundingClientRect());
+  }
+
+  /**
+   * Re-pin the popover after a card changed height. The editor is taller than
+   * the note it replaces, so a popover that opened low in the window would
+   * otherwise grow off the bottom of it.
+   */
+  function reposition() {
+    if (popover && popoverAnchor) place(popover, popoverAnchor.getBoundingClientRect());
   }
 
   /** Pin a fixed-position panel under a rect, kept inside the viewport. */
@@ -1931,8 +2068,13 @@ const NOTES_SCRIPT = `
     const left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
     const below = rect.bottom + 8;
     const fitsBelow = below + panel.offsetHeight < window.innerHeight - 12;
+    const top = fitsBelow ? below : rect.top - panel.offsetHeight - 8;
+    // Neither side always fits — a note low in the window with its editor open
+    // is the tall case — so the panel is pulled back inside the viewport rather
+    // than left hanging over an edge.
+    const lowest = Math.max(12, window.innerHeight - panel.offsetHeight - 12);
     panel.style.left = left + "px";
-    panel.style.top = (fitsBelow ? below : Math.max(12, rect.top - panel.offsetHeight - 8)) + "px";
+    panel.style.top = Math.max(12, Math.min(top, lowest)) + "px";
   }
 
   // --- writing ---------------------------------------------------------------
@@ -2052,46 +2194,20 @@ const NOTES_SCRIPT = `
     quote.textContent = "\\u201c" + anchor.quote + "\\u201d";
     composer.appendChild(quote);
 
-    const field = document.createElement("textarea");
-    field.className = "note-input";
-    field.rows = 3;
-    field.placeholder = "What should change here?";
+    const field = noteField("");
     composer.appendChild(field);
 
     const row = document.createElement("div");
     row.className = "note-composer-actions";
 
-    const kinds = document.createElement("div");
-    kinds.className = "note-kinds";
-    let kind = "task";
-    for (const option of [["task", "Task"], ["remark", "Remark"]]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "note-kind-option" + (option[0] === kind ? " is-selected" : "");
-      button.textContent = option[1];
-      button.title =
-        option[0] === "task" ? "Something an agent should change" : "Context, not an instruction";
-      button.addEventListener("click", () => {
-        kind = option[0];
-        for (const sibling of kinds.children) {
-          sibling.classList.toggle("is-selected", sibling === button);
-        }
-      });
-      kinds.appendChild(button);
-    }
-    row.appendChild(kinds);
+    const picker = kindPicker("task");
+    row.appendChild(picker.element);
 
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "button secondary";
-    cancel.textContent = "Cancel";
+    const cancel = actionButton("Cancel", "secondary");
     cancel.addEventListener("click", closeComposer);
     row.appendChild(cancel);
 
-    const save = document.createElement("button");
-    save.type = "button";
-    save.className = "button primary";
-    save.textContent = "Save";
+    const save = actionButton("Save", "primary");
     const submit = () => {
       const text = field.value.trim();
       if (!text) {
@@ -2099,7 +2215,17 @@ const NOTES_SCRIPT = `
         return;
       }
       save.disabled = true;
-      send({ op: "add", line: anchor.line, hash: anchor.hash, quote: anchor.quote, text, kind }, save);
+      send(
+        {
+          op: "add",
+          line: anchor.line,
+          hash: anchor.hash,
+          quote: anchor.quote,
+          text: text,
+          kind: picker.kind(),
+        },
+        save
+      );
     };
     save.addEventListener("click", submit);
     row.appendChild(save);
@@ -2172,9 +2298,12 @@ const STYLES = `
   --surface:#fff; --surface-hover:#eef0f3; --surface-hover-2:#f7f8fa;
   --active-bg:#e7efff; --selected-bg:#dbeafe;
   --mark-bg:#fde68a; --mark-bg-strong:#fcd34d; --mark-fg:#713f12;
-  /* Notes are teal, deliberately nowhere near the amber of a search hit. */
+  /* Notes are teal, deliberately nowhere near the amber of a search hit… */
   --note-bg:#ccfbf1; --note-bg-strong:#99f6e4; --note-fg:#115e59;
   --note-pin:#0d9488; --note-border:#5eead4;
+  /* …except a task, which asks for a change and is rose so it reads as one. */
+  --task-bg:#ffe4e6; --task-bg-strong:#fecdd3; --task-fg:#9f1239;
+  --task-pin:#fa5785; --task-border:#fda4af;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -2202,6 +2331,8 @@ const STYLES = `
   --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
   --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
   --note-pin:#2dd4bf; --note-border:#0f766e;
+  --task-bg:#881337; --task-bg-strong:#9f1239; --task-fg:#fecdd3;
+  --task-pin:#fa5785; --task-border:#be123c;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2231,6 +2362,8 @@ const STYLES = `
     --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
     --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
     --note-pin:#2dd4bf; --note-border:#0f766e;
+    --task-bg:#881337; --task-bg-strong:#9f1239; --task-fg:#fecdd3;
+    --task-pin:#fa5785; --task-border:#be123c;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2551,6 +2684,14 @@ body.dragging-page .space-current{
    lays out exactly as it did before this feature existed. The pin sits in the
    left padding of .content (40px, 20px on mobile) — hence the two offsets. */
 .prose [data-flux-notes]{position:relative}
+/* A task carries its own palette on the element, so every rule below stays
+   kind-agnostic and a remark keeps the teal it always had. Leaf elements only:
+   swapping the tokens on a container would leak into the Remark button of the
+   kind switch nested inside a card. */
+.note-mark.is-task,.note-pin.is-task,.note-kind.is-task,.note-kind-option.is-task{
+  --note-bg:var(--task-bg); --note-bg-strong:var(--task-bg-strong);
+  --note-fg:var(--task-fg); --note-pin:var(--task-pin); --note-border:var(--task-border);
+}
 .prose mark.note-mark{
   background:var(--note-bg); color:var(--note-fg);
   border-radius:2px; padding:0 .05em; cursor:pointer;
@@ -2585,12 +2726,11 @@ body.dragging-page .space-current{
 }
 /* pre-wrap so a multi-line note keeps the shape its author gave it. */
 .note-text{font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere}
-.note-resolve{align-self:flex-start}
 .note-input{
   width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
   background:var(--bg); color:var(--fg); font:inherit; font-size:14px; resize:vertical;
 }
-.note-composer-actions{display:flex; align-items:center; gap:8px}
+.note-composer-actions,.note-card-actions{display:flex; align-items:center; gap:8px}
 .note-kinds{display:inline-flex; margin-right:auto; border:1px solid var(--line); border-radius:6px; overflow:hidden}
 .note-kind-option{
   padding:4px 10px; border:0; background:var(--surface); color:var(--muted);

@@ -437,6 +437,40 @@ test("notes: a read-only or archive view ships neither the payload nor the scrip
   }
 });
 
+test("notes: a note is rewritten and re-typed in its own card", () => {
+  const html = layout(pageView());
+  // Editing swaps the card in place rather than opening a second panel...
+  assert.match(html, /edit\.addEventListener\("click", \(event\) => swap\(true, event\)\)/);
+  // ...and that click stops short of the document: redrawing detaches the very
+  // button that was clicked, and the outside-click handler would find no popover
+  // above the orphan and close the card out from under the editor.
+  assert.match(html, /const swap = \(editing, event\) => \{\s*if \(event\) event\.stopPropagation\(\);/);
+  // ...and saving posts the new text and kind against the note's own id, so the
+  // note keeps its anchor instead of being resolved and written again.
+  assert.match(
+    html,
+    /send\(\{ op: "edit", noteId: note\.id, text: text, kind: picker\.kind\(\) \}, save\)/
+  );
+  // The Task/Remark switch is the composer's, so both paths offer both kinds.
+  assert.match(html, /function kindPicker\(current\)/);
+  assert.match(html, /const picker = kindPicker\(note\.kind\)/);
+  assert.match(html, /const picker = kindPicker\("task"\)/);
+});
+
+test("notes: tasks are rose and remarks stay teal", () => {
+  const html = layout(pageView());
+  // Every theme block defines the palette; one missing it renders a task unstyled.
+  assert.equal(html.split("--task-bg:").length - 1, 3);
+  assert.match(html, /--task-pin:#fa5785/);
+  // The kind's palette rides on the element, so the rules that draw a note are
+  // shared and a remark keeps the teal it always had.
+  assert.match(html, /\.note-mark\.is-task,[^{]+\{\s*--note-bg:var\(--task-bg\)/);
+  assert.match(html, /\.note-kind\.is-remark\{background:var\(--surface-hover\)/);
+  assert.match(html, /mark\.className = "note-mark is-" \+ note\.kind/);
+  // A single task among remarks colours the one pin the block gets.
+  assert.match(html, /pin\.classList\.toggle\("is-task", !allRemarks\)/);
+});
+
 test("notes: the pin finds a legal host inside list and table blocks", () => {
   const html = layout(pageView());
   // A <button> is invalid as a direct child of <ul>/<ol>/<table>.

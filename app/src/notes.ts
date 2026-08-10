@@ -17,7 +17,8 @@ import { randomBytes } from "node:crypto";
  * is edited), git versions it alongside the prose it comments on, and an LLM
  * reading the raw Markdown sees it already in place without a second lookup.
  *
- * Resolving a note means deleting the comment — git keeps the history.
+ * Resolving a note means deleting the comment; editing one rewrites it where it
+ * sits, keeping the id it was written with — git keeps the history of both.
  */
 
 /** How a note should be treated by an agent reading the page. */
@@ -235,6 +236,40 @@ export function insertNote(body: string, at: number, note: Omit<Note, "line">): 
   const block = formatNote(note).split("\n");
   const needsGap = index > 0 && lines[index - 1].trim() !== "";
   lines.splice(index, 0, ...(needsGap ? ["", ...block] : block));
+  return lines.join("\n");
+}
+
+/**
+ * Rewrite a note's text, its kind, or both, in place. Everything else — id,
+ * timestamp, author, quote, and the position that anchors it — is carried over:
+ * this is the same note amended, not a new one, and git holds the before and
+ * after. Returns the new body, or `null` if no note has that id.
+ *
+ * A note written by hand without an `id=` is addressed by position, which is not
+ * a durable handle; rewriting one stamps a real id on it so the next edit can
+ * find it by name.
+ */
+export function updateNote(
+  body: string,
+  id: string,
+  changes: { text?: string; kind?: NoteKind }
+): string | null {
+  if (!id) return null;
+  const target = scanNotes(body).find((s) => s.note.id === id);
+  if (!target) return null;
+
+  const current = target.note;
+  const block = formatNote({
+    id: current.id.startsWith("@") ? newNoteId() : current.id,
+    kind: changes.kind ?? current.kind,
+    at: current.at,
+    by: current.by,
+    quote: current.quote,
+    text: changes.text ?? current.text,
+  }).split("\n");
+
+  const lines = body.split("\n");
+  lines.splice(target.start, target.end - target.start + 1, ...block);
   return lines.join("\n");
 }
 

@@ -28,6 +28,7 @@ import {
   parseNotes,
   removeNote,
   splitFrontmatter,
+  updateNote,
 } from "./notes.js";
 import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
@@ -983,8 +984,8 @@ function resolveAnchor(body: string, line: number, hash: string): number | null 
 }
 
 /**
- * Add or resolve an inline note. Fetch-driven like `/_move`, because the reader
- * stays on the page rather than navigating away from it.
+ * Add, edit or resolve an inline note. Fetch-driven like `/_move`, because the
+ * reader stays on the page rather than navigating away from it.
  *
  * Resolving deletes the note outright: git keeps both the note and the edit it
  * prompted, so there is nothing to gain from leaving a tombstone in the prose.
@@ -996,10 +997,11 @@ app.post("/_notes/*", async (req, reply) => {
 
   const { header, body } = splitFrontmatter(page.raw);
   const relPath = git.kbRelPath(page.fsPath);
+  const op = formString(req.body, "op");
   let nextBody: string;
   let message: string;
 
-  if (formString(req.body, "op") === "resolve") {
+  if (op === "resolve") {
     const removed = removeNote(body, formString(req.body, "noteId") ?? "");
     if (removed === null) {
       return reply
@@ -1008,6 +1010,25 @@ app.post("/_notes/*", async (req, reply) => {
     }
     nextBody = removed;
     message = `Resolve note on ${relPath} via web`;
+  } else if (op === "edit") {
+    const text = (formString(req.body, "text") ?? "").trim();
+    if (!text) return reply.code(400).send({ ok: false, error: "Write the note first." });
+
+    const kind = formString(req.body, "kind");
+    // The note keeps its anchor, its id and its timestamp — only what the writer
+    // retyped changes. An absent or unrecognised kind leaves the note's own
+    // rather than quietly retyping it.
+    const edited = updateNote(body, formString(req.body, "noteId") ?? "", {
+      text,
+      kind: kind === "remark" || kind === "task" ? kind : undefined,
+    });
+    if (edited === null) {
+      return reply
+        .code(409)
+        .send({ ok: false, error: "That note is already gone. Reload the page." });
+    }
+    nextBody = edited;
+    message = `Edit note on ${relPath} via web`;
   } else {
     const text = (formString(req.body, "text") ?? "").trim();
     if (!text) return reply.code(400).send({ ok: false, error: "Write the note first." });

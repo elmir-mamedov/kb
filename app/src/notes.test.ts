@@ -9,6 +9,7 @@ import {
   removeNote,
   splitFrontmatter,
   stripNotes,
+  updateNote,
   type Note,
 } from "./notes.js";
 
@@ -216,6 +217,90 @@ test("removing the only note restores the original body", () => {
   const original = "First paragraph.\n\nSecond paragraph.\n";
   const withNote = insertNote(original, 2, note());
   assert.equal(removeNote(withNote, "n7k2m4x8"), original);
+});
+
+test("updateNote rewrites a note in place, keeping everything that anchors it", () => {
+  const original = "First paragraph.\n\nSecond paragraph.\n";
+  const body = insertNote(original, 2, note({ quote: "Second", by: "elmir" }));
+
+  const next = updateNote(body, "n7k2m4x8", { text: "Reworded.", kind: "remark" });
+  assert.ok(next !== null);
+  const parsed = parseNotes(next);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].text, "Reworded.");
+  assert.equal(parsed[0].kind, "remark");
+  // Id, timestamp, author and quote are what make this the same note amended
+  // rather than a new one, so an edit must carry all four over.
+  assert.equal(parsed[0].id, "n7k2m4x8");
+  assert.equal(parsed[0].at, "2026-08-10T09:12:04Z");
+  assert.equal(parsed[0].by, "elmir");
+  assert.equal(parsed[0].quote, "Second");
+  // ...and it still abuts the block it annotates, with the prose untouched.
+  const lines = next.split("\n");
+  assert.equal(lines[lines.indexOf("-->") + 1], "Second paragraph.");
+  assert.equal(stripNotes(next), original);
+});
+
+test("updateNote changes only what it is given", () => {
+  const body = insertNote("Paragraph.", 0, note({ text: "Original." }));
+
+  const retyped = updateNote(body, "n7k2m4x8", { kind: "remark" });
+  assert.ok(retyped !== null);
+  assert.deepEqual(
+    parseNotes(retyped).map((n) => [n.kind, n.text]),
+    [["remark", "Original."]]
+  );
+
+  const reworded = updateNote(body, "n7k2m4x8", { text: "Rewritten." });
+  assert.ok(reworded !== null);
+  assert.deepEqual(
+    parseNotes(reworded).map((n) => [n.kind, n.text]),
+    [["task", "Rewritten."]]
+  );
+});
+
+test("updateNote leaves the other notes stacked on a block alone", () => {
+  const body = insertNote(
+    insertNote("Target paragraph.\n", 0, note({ id: "aaa", text: "First." })),
+    0,
+    note({ id: "bbb", text: "Second." })
+  );
+  const next = updateNote(body, "aaa", { text: "First, rewritten.", kind: "remark" });
+  assert.ok(next !== null);
+  assert.deepEqual(
+    parseNotes(next).map((n) => [n.id, n.kind, n.text]),
+    [
+      ["bbb", "task", "Second."],
+      ["aaa", "remark", "First, rewritten."],
+    ]
+  );
+  assert.equal(stripNotes(next).trim(), "Target paragraph.");
+});
+
+test("updateNote reports an unknown or missing id rather than silently succeeding", () => {
+  const body = insertNote("Paragraph.", 0, note({ id: "aaa" }));
+  assert.equal(updateNote(body, "nope", { text: "Rewritten." }), null);
+  assert.equal(updateNote(body, "", { text: "Rewritten." }), null);
+});
+
+test("updateNote stamps a real id on a hand-written note so the next edit finds it", () => {
+  const body = "Paragraph.\n\n<!-- flux:note\nDo the thing.\n-->\nAnother.";
+  const next = updateNote(body, "@2", { text: "Do the other thing." });
+  assert.ok(next !== null);
+  const parsed = parseNotes(next);
+  assert.match(parsed[0].id, /^[a-z0-9]{8}$/);
+  assert.equal(parsed[0].text, "Do the other thing.");
+  // Addressable by name now, rather than by whatever line it happens to sit on.
+  assert.equal(updateNote(next, "@2", { text: "Again." }), null);
+});
+
+test("text rewritten into a note is escaped, not left to end the comment early", () => {
+  const next = updateNote(insertNote("Paragraph.", 0, note()), "n7k2m4x8", {
+    text: "Point --> there",
+  });
+  assert.ok(next !== null);
+  assert.equal(next.split("\n").filter((l) => l.trim() === "-->").length, 1);
+  assert.equal(parseNotes(next)[0].text, "Point --> there");
 });
 
 test("splitFrontmatter preserves the header bytes exactly", () => {
