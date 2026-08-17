@@ -31,14 +31,10 @@ export interface PageNode {
   archived: boolean;
   archivedAt?: string;
   /**
-   * Last-modified time (ms since epoch) of the backing file. For sections it is
-   * the most recent mtime across the whole subtree, so an area with recent
-   * activity bubbles up. Drives "recently modified" sibling ordering.
-   */
-  modifiedMs: number;
-  /**
-   * Manual sibling position from frontmatter (`order`), when the group this node
-   * belongs to has been arranged by hand. Undefined means unplaced.
+   * Sibling position from frontmatter (`order`): written by sidebar
+   * drag-and-drop, and stamped on every page at creation so a new page opens at
+   * the top of its level. Undefined means unplaced — a page that predates the
+   * stamping, or one that has left the group it was arranged into.
    */
   order?: number;
   children: PageNode[];
@@ -240,7 +236,6 @@ export class Content {
         let backing = dirPath;
         let archived = false;
         let archivedAt: string | undefined;
-        let ownMtime: number | undefined;
         let order: number | undefined;
         let isFolder = false;
         try {
@@ -251,7 +246,6 @@ export class Content {
             archived = parsed.data.archived === true;
             archivedAt = parsed.data.archivedAt;
             backing = indexPath;
-            ownMtime = parsed.mtimeMs;
             order = parsed.data.order;
             isFolder = isFolderPage(parsed.data);
           }
@@ -259,12 +253,6 @@ export class Content {
           /* no/invalid index.md — still a navigable container */
         }
         const children = await this.walk(dirPath, slug, filter);
-        // A section's modified time is the most recent change to its own index
-        // or any descendant, so recently-touched branches sort to the top.
-        const modifiedMs = children.reduce(
-          (max, child) => Math.max(max, child.modifiedMs),
-          ownMtime ?? (await mtimeMs(backing))
-        );
         if (this.includeNode(filter, archived, children.length)) {
           nodes.push({
             slug,
@@ -275,7 +263,6 @@ export class Content {
             isFolder,
             archived,
             archivedAt,
-            modifiedMs,
             order,
             children,
           });
@@ -288,7 +275,6 @@ export class Content {
         let id: string | undefined;
         let archived = false;
         let archivedAt: string | undefined;
-        let ownMtime: number | undefined;
         let order: number | undefined;
         try {
           const parsed = await this.readParsed(fsPath);
@@ -297,15 +283,13 @@ export class Content {
             id = parsed.data.id;
             archived = parsed.data.archived === true;
             archivedAt = parsed.data.archivedAt;
-            ownMtime = parsed.mtimeMs;
             order = parsed.data.order;
           }
         } catch {
           /* fall back to filename */
         }
-        const modifiedMs = ownMtime ?? (await mtimeMs(fsPath));
         if (this.includeNode(filter, archived, 0)) {
-          nodes.push({ slug, id, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, modifiedMs, order, children: [] });
+          nodes.push({ slug, id, title, fsPath, isSection: false, isFolder: false, archived, archivedAt, order, children: [] });
         }
       }
     }
@@ -447,7 +431,8 @@ export class Content {
     const slug = parentPrefix ? `${parentPrefix}/${name}` : name;
     const fsPath = path.join(parentDir, `${name}.md`);
     const id = newPageId();
-    const raw = matter.stringify(`# ${title}\n\n`, { title, id });
+    const order = await this.openingOrder(parentDir);
+    const raw = matter.stringify(`# ${title}\n\n`, { title, id, order });
 
     parsePage(raw, fsPath);
     if (promotion) await this.applyPromotion(promotion);
@@ -497,7 +482,10 @@ export class Content {
     const fsPath = path.join(parentDir, `${name}.md`);
 
     const id = newPageId();
-    const data: Record<string, unknown> = { title: trimmedTitle, id };
+    // A new page opens at the top of its level; everything already there keeps
+    // the position it had.
+    const order = await this.openingOrder(parentDir);
+    const data: Record<string, unknown> = { title: trimmedTitle, id, order };
     if (opts.tags && opts.tags.length > 0) data.tags = opts.tags;
     if (opts.summary) data.summary = opts.summary;
     const content = body.trim() ? `${body.trim()}\n` : `# ${trimmedTitle}\n\n`;
@@ -549,10 +537,11 @@ export class Content {
     const folderDir = path.join(parentDir, folderName);
     const indexPath = path.join(folderDir, "index.md");
     // A folder is a pure container: its index.md carries only the display name,
-    // a stable id (so it stays linkable/move-proof), and the `type: folder`
-    // marker, with no body to edit.
+    // a stable id (so it stays linkable/move-proof), the `type: folder` marker
+    // and its position, with no body to edit.
     const id = newPageId();
-    const raw = matter.stringify("", { title: folderTitle, id, type: "folder" });
+    const order = await this.openingOrder(parentDir);
+    const raw = matter.stringify("", { title: folderTitle, id, type: "folder", order });
     parsePage(raw, indexPath);
 
     if (promotion) await this.applyPromotion(promotion);
@@ -845,6 +834,14 @@ export class Content {
     await fs.mkdir(parentDir, { recursive: true });
     await fs.rename(sourcePath, destinationPath);
     await this.pruneEmptyDirs(path.dirname(sourcePath));
+
+    // It has left the group it was arranged into, so the number it was arranged
+    // with is meaningless here: unplaced, it joins the end of its new group.
+    // reorderPages moves first and numbers afterwards, so a drop on an insertion
+    // line still lands exactly where it was dropped.
+    await this.clearOrder(
+      sourceIsSection ? path.join(destinationPath, "index.md") : destinationPath
+    );
 
     const rewritten = await this.rewriteLinksForMove(cleanSource, newSlug, preTitles);
 
@@ -1316,6 +1313,70 @@ export class Content {
     return this.walk(path.dirname(fsPath), clean, filter);
   }
 
+  /**
+   * The `order` a page created in `dir` should carry: one step below the lowest
+   * placed sibling, so a brand-new page opens at the top of its level — the one
+   * position that is *not* stable, and the only one a create is allowed to claim.
+   * A group nobody has arranged yet starts at 0, so the numbers walk 0, -1, -2 as
+   * pages are added and stay clear of the 1..N a drag-reorder writes.
+   *
+   * Reads the destination directory only, mirroring how {@link walk} decides what
+   * counts as a sibling; unreadable siblings simply don't constrain the number.
+   */
+  private async openingOrder(dir: string): Promise<number> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+
+    let lowest: number | undefined;
+    for (const entry of entries) {
+      const name = entry.name;
+      if (name.startsWith(".") || name.startsWith("_")) continue;
+      const fsPath = entry.isDirectory()
+        ? path.join(dir, name, "index.md")
+        : name.endsWith(".md") && name !== "index.md"
+          ? path.join(dir, name)
+          : null;
+      if (!fsPath) continue;
+
+      let order: number | undefined;
+      try {
+        order = (await this.readParsed(fsPath))?.data.order;
+      } catch {
+        /* a sibling we cannot parse has no position to respect */
+      }
+      if (order !== undefined && (lowest === undefined || order < lowest)) lowest = order;
+    }
+    return lowest === undefined ? 0 : lowest - 1;
+  }
+
+  /**
+   * Drop a page's `order`, leaving it unplaced. Used when a page changes parent:
+   * a number that meant "third in that group" means nothing in this one, and
+   * keeping it would land the page at an arbitrary spot — so it falls in with the
+   * unplaced siblings at the end instead. Returns false when it had none.
+   */
+  private async clearOrder(fsPath: string): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(fsPath, "utf8");
+    } catch {
+      return false;
+    }
+
+    const parsed = matter(raw);
+    if (!Object.prototype.hasOwnProperty.call(parsed.data, "order")) return false;
+    const { order: _placed, ...data } = parsed.data;
+    const nextRaw = matter.stringify(parsed.content, data);
+    if (nextRaw === raw) return false;
+
+    await fs.writeFile(fsPath, nextRaw, "utf8");
+    return true;
+  }
+
   /** Write `order` into a page's frontmatter. Returns false when already at that value. */
   private async setOrder(fsPath: string, order: number): Promise<boolean> {
     const raw = await fs.readFile(fsPath, "utf8");
@@ -1401,11 +1462,14 @@ function moveRoots(sourceSlugs: string[]): string[] {
 /**
  * Sibling order within one navigation group.
  *
- * Hand-placed siblings (frontmatter `order`, written by sidebar drag-and-drop)
- * come first, ascending. Everything else keeps the recent-first default and
- * follows them, so a page created or moved into an arranged group lands at the
- * end of it rather than jumping over the arrangement. Titles break both ties, so
- * a fresh checkout with uniform mtimes still renders in a stable order.
+ * Placed siblings (frontmatter `order` — stamped on create, rewritten by sidebar
+ * drag-and-drop) come first, ascending; unplaced ones follow in title order.
+ *
+ * Nothing here reads the filesystem, so editing a page — its body, or a note on
+ * it — cannot move it: only writing a new `order` can. New pages are placed at
+ * the top of their level by {@link Content.openingOrder}, and because a section's
+ * position is its own `order` and nothing about its subtree, adding a page deep
+ * inside a branch leaves every ancestor exactly where it was.
  */
 function compareNodes(a: PageNode, b: PageNode): number {
   if (a.order !== undefined && b.order !== undefined) {
@@ -1413,7 +1477,7 @@ function compareNodes(a: PageNode, b: PageNode): number {
   }
   if (a.order !== undefined) return -1;
   if (b.order !== undefined) return 1;
-  return b.modifiedMs - a.modifiedMs || a.title.localeCompare(b.title);
+  return a.title.localeCompare(b.title);
 }
 
 /** Depth-first flatten of a navigation tree, parents before their children. */
@@ -1545,14 +1609,5 @@ async function exists(p: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Best-effort last-modified time in ms; 0 when the path can't be stat'd. */
-async function mtimeMs(p: string): Promise<number> {
-  try {
-    return (await fs.stat(p)).mtimeMs;
-  } catch {
-    return 0;
   }
 }

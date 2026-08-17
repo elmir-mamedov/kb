@@ -18,12 +18,14 @@ export const FrontmatterSchema = z.object({
   tags: z.array(z.string()).optional(),
   summary: z.string().optional(),
   /**
-   * Manual sibling position in the navigation, 1-based and ascending. Written by
-   * sidebar drag-and-drop reordering, which renumbers every sibling in the group
-   * it touches. Absent means "unplaced": those siblings keep the recent-first
-   * default and sort after the explicitly ordered ones (see Content.walk).
-   * Any number is accepted, so a fractional value can be hand-written to slot a
-   * page between two ordered siblings without renumbering them.
+   * Sibling position in the navigation, ascending. Sidebar drag-and-drop
+   * renumbers every sibling in the group it touches from 1; a newly created page
+   * is stamped one below its lowest sibling (so 0, then -1, …) and therefore opens
+   * at the top of its level. Absent means "unplaced" — a page written before this
+   * was stamped, or one that has moved out of the group it was arranged into:
+   * those sort after the placed ones, by title (see Content.walk). Any number is
+   * accepted, so a fractional value can be hand-written to slot a page between two
+   * ordered siblings without renumbering them.
    */
   order: z.number().optional(),
   /** Optional emoji shown on the space card; only meaningful on a space's index.md. */

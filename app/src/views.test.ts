@@ -17,7 +17,6 @@ function node(overrides: Partial<PageNode> & Pick<PageNode, "slug" | "title">): 
     isSection: false,
     isFolder: false,
     archived: false,
-    modifiedMs: 0,
     children: [],
     ...overrides,
   };
@@ -139,17 +138,16 @@ test("only real folders render a folder icon — content sections do not", () =>
     pageView({
       tree: [
         // A real folder (pure container).
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true, modifiedMs: 3 }),
+        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
         // A content section: a page that happens to have children — NOT a folder.
         node({
           slug: "flux/handbook",
           title: "Handbook",
           isSection: true,
           isFolder: false,
-          modifiedMs: 2,
         }),
         // A leaf page.
-        node({ slug: "flux/notes", title: "Notes", modifiedMs: 1 }),
+        node({ slug: "flux/notes", title: "Notes" }),
       ],
     })
   );
@@ -163,18 +161,17 @@ test("only leaf pages get a dot — folders and pages-with-children do not", () 
     pageView({
       tree: [
         // A real folder (pure container) — folder icon, no dot.
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true, modifiedMs: 4 }),
+        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
         // A content section: a page with children — expand caret, no dot.
         node({
           slug: "flux/handbook",
           title: "Handbook",
           isSection: true,
           isFolder: false,
-          modifiedMs: 3,
-          children: [node({ slug: "flux/handbook/intro", title: "Intro", modifiedMs: 2 })],
+          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
         }),
         // A leaf page — gets the dot.
-        node({ slug: "flux/notes", title: "Notes", modifiedMs: 1 }),
+        node({ slug: "flux/notes", title: "Notes" }),
       ],
     })
   );
@@ -341,13 +338,12 @@ test("tree rows open with exactly one marker glyph, so carets and dots share a c
           slug: "flux/handbook",
           title: "Handbook",
           isSection: true,
-          modifiedMs: 4,
-          children: [node({ slug: "flux/handbook/intro", title: "Intro", modifiedMs: 3 })],
+          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
         }),
         // A leaf page: gets the dot, in the caret's column.
-        node({ slug: "flux/notes", title: "Notes", modifiedMs: 2 }),
+        node({ slug: "flux/notes", title: "Notes" }),
         // A folder: spacer or caret in that column, then its own icon.
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true, modifiedMs: 1 }),
+        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
       ],
     })
   );

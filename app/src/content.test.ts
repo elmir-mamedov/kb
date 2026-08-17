@@ -503,7 +503,8 @@ test("issue #2: reorderPages arranges siblings, and the tree renders that order"
   try {
     const content = new Content(kb.dir);
     await seedSpace(content, "Docs");
-    // Created oldest-first, so the recent-first default lists them backwards.
+    // Each new page opens at the top, so creating them in this order lists them
+    // backwards.
     for (const title of ["Alpha", "Beta", "Gamma"]) {
       await content.createPage("docs", title, `# ${title}\n`);
     }
@@ -536,7 +537,9 @@ test("issue #2: a drop on a top-level line lifts a child page out to the space r
     await content.createPage("docs", "Area", "# Area\n");
     await content.createPage("docs", "Notes", "# Notes\n");
     await content.createPage("docs/area", "Deep", "# Deep\n");
-    assert.deepEqual(await orderOf(content, "docs"), ["area", "notes"]);
+    // Notes opened above Area and stays there: the page added inside Area is
+    // first among *its* children and does not lift Area over its own sibling.
+    assert.deepEqual(await orderOf(content, "docs"), ["notes", "area"]);
 
     // Drop docs/area/deep on the line above docs/notes at the top level.
     const result = await content.reorderPages(["docs/area/deep"], "docs", "docs/notes");
@@ -546,8 +549,8 @@ test("issue #2: a drop on a top-level line lifts a child page out to the space r
       "leaving its parent is a real move, reported so the client can follow it"
     );
     assert.deepEqual(result.placedSlugs, ["docs/deep"], "positioned by its post-move slug");
-    // It lands at the requested spot — directly above notes — and area, having
-    // lost the descendant that kept it at the top, follows on recency.
+    // It lands at the requested spot — directly above notes — and the group is
+    // renumbered around it, so area keeps the position it already had.
     assert.deepEqual(await orderOf(content, "docs"), ["deep", "notes", "area"]);
     assert.equal(await pathExists(path.join(kb.dir, "docs", "deep.md")), true);
   } finally {
@@ -572,7 +575,7 @@ test("issue #2: reorderPages keeps a multi-page drop in the order it was given",
   }
 });
 
-test("issue #2: an arranged group keeps its shape when a new page joins it", async () => {
+test("issue #2: a new page opens on top of an arranged group without reshuffling it", async () => {
   const kb: TempKb = await makeTempKb();
   try {
     const content = new Content(kb.dir);
@@ -583,10 +586,15 @@ test("issue #2: an arranged group keeps its shape when a new page joins it", asy
     await content.reorderPages(["docs/alpha"], "docs", "docs/beta");
     assert.deepEqual(await orderOf(content, "docs"), ["alpha", "beta"]);
 
-    // Unplaced pages follow the arranged ones rather than jumping to the top,
-    // so a new page cannot silently rearrange what the reader put in order.
+    // A brand-new page is the one thing that claims the top of a level — the
+    // arrangement below it keeps the shape the reader gave it.
     await content.createPage("docs", "Fresh", "# Fresh\n");
-    assert.deepEqual(await orderOf(content, "docs"), ["alpha", "beta", "fresh"]);
+    assert.deepEqual(await orderOf(content, "docs"), ["fresh", "alpha", "beta"]);
+
+    // It got there by being numbered below the group's lowest sibling (1), not by
+    // being the most recently touched file.
+    const fresh = await content.loadRaw("docs/fresh");
+    assert.match(fresh!.raw, /^order: 0$/m);
   } finally {
     await kb.cleanup();
   }
@@ -636,13 +644,123 @@ test("issue #2: an archived sibling is numbered too, so restoring keeps its plac
       result.orderedSlugs.filter((s) => s !== "docs/beta").map((s) => s.split("/").at(-1)),
     );
 
-    // Restoring it puts it back in the slot it was numbered into, rather than at
-    // the top where its freshly-touched mtime would otherwise have placed it.
+    // Restoring it puts it back in the slot it was numbered into.
     await content.updateArchive("docs/beta", false);
     assert.deepEqual(
       await orderOf(content, "docs"),
       result.orderedSlugs.map((s) => s.split("/").at(-1)),
     );
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("editing a page — body or note — leaves the sidebar exactly as it was", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    for (const title of ["Alpha", "Beta", "Gamma"]) {
+      await content.createPage("docs", title, `# ${title}\n`);
+    }
+    await content.createPage("docs/alpha", "Deep", "# Deep\n");
+    await content.createPage("docs/alpha", "Deeper", "# Deeper\n");
+
+    const before = await orderOf(content, "docs");
+    const beforeChildren = await orderOf(content, "docs/alpha");
+    assert.deepEqual(before, ["gamma", "beta", "alpha"]);
+
+    // Rewrite the page at the *bottom* of the group, the case that used to jump
+    // it to the top: sibling order came from the file's mtime.
+    const alpha = await content.loadRaw("docs/alpha");
+    await content.updateRaw("docs/alpha", `${alpha!.raw}\nA second paragraph.\n`);
+
+    // A note is written through updateRaw too (see /_notes), so leaving one on a
+    // deep page is the same edit as far as the tree is concerned.
+    const deep = await content.loadRaw("docs/alpha/deep");
+    await content.updateRaw(
+      "docs/alpha/deep",
+      `${deep!.raw}\n<!-- flux:note id=n1 kind=task\n> Deep\n\nFix this.\n-->\n`
+    );
+
+    assert.deepEqual(await orderOf(content, "docs"), before);
+    assert.deepEqual(await orderOf(content, "docs/alpha"), beforeChildren);
+    // And it is the files that say so, not a warm cache in this instance.
+    assert.deepEqual(await orderOf(new Content(kb.dir), "docs"), before);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("a page created deep in a branch leaves every ancestor where it was", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Area");
+    await content.createFolder("docs/area", "Inner");
+    await content.createPage("docs", "Notes", "# Notes\n");
+    assert.deepEqual(await orderOf(content, "docs"), ["notes", "area"]);
+
+    // The new page is first among its own siblings; area does not overtake notes
+    // on the strength of activity underneath it.
+    await content.createPage("docs/area/inner", "Fresh", "# Fresh\n");
+    assert.deepEqual(await orderOf(content, "docs"), ["notes", "area"]);
+    assert.deepEqual(await orderOf(content, "docs/area/inner"), ["fresh"]);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("pages written without an order follow the placed ones, by title", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    // Pages that predate the create-time stamping, or that arrived from another
+    // machine: written straight to disk with no order of their own.
+    for (const [name, title] of [
+      ["zulu", "Zulu"],
+      ["alpha", "Alpha"],
+      ["mike", "Mike"],
+    ]) {
+      await fs.writeFile(
+        path.join(kb.dir, "docs", `${name}.md`),
+        `---\ntitle: ${title}\n---\n# ${title}\n`,
+        "utf8"
+      );
+    }
+    assert.deepEqual(await orderOf(content, "docs"), ["alpha", "mike", "zulu"]);
+
+    // Touching one changes nothing; a page that *is* placed goes above them all.
+    const mike = await content.loadRaw("docs/mike");
+    await content.updateRaw("docs/mike", `${mike!.raw}\nEdited.\n`);
+    await content.createPage("docs", "Fresh", "# Fresh\n");
+    assert.deepEqual(await orderOf(content, "docs"), ["fresh", "alpha", "mike", "zulu"]);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("issue #2: a page dropped into another folder drops the order it was arranged with", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createFolder("docs", "Box");
+    for (const title of ["Alpha", "Beta"]) {
+      await content.createPage("docs/box", title, `# ${title}\n`);
+    }
+    await content.createPage("docs", "Wanderer", "# Wanderer\n");
+    await content.reorderPages(["docs/wanderer"], "docs", "");
+    assert.match((await content.loadRaw("docs/wanderer"))!.raw, /^order: \d+$/m);
+
+    // Dropped onto box, its "second in that group" means nothing here, so it
+    // arrives unplaced and joins the end rather than a spot it never asked for.
+    await content.movePages(["docs/wanderer"], "docs/box");
+    const moved = await content.loadRaw("docs/box/wanderer");
+    assert.doesNotMatch(moved!.raw, /^order:/m);
+    assert.deepEqual(await orderOf(content, "docs/box"), ["beta", "alpha", "wanderer"]);
   } finally {
     await kb.cleanup();
   }
