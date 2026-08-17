@@ -57,7 +57,10 @@ loadEnvFile(path.join(__dirname, "..", ".env"));
 const KB_DIR = path.resolve(
   process.env.KB_DIR ?? path.join(__dirname, "..", "..", "kb")
 );
-const HOST = process.env.HOST ?? "0.0.0.0"; // bind for LAN access
+// Loopback-only by default, so the viewer is reachable from this machine and
+// nowhere else. Fastify binds both 127.0.0.1 and ::1 for "localhost". Set
+// HOST=0.0.0.0 to deliberately expose it to the LAN.
+const HOST = process.env.HOST ?? "localhost";
 const PORT = Number(process.env.PORT ?? 4000);
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
 

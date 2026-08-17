@@ -35,4 +35,4 @@ Pull requests should include a short summary, verification steps, affected paths
 
 ## Security & Configuration Tips
 
-Configuration is via environment variables: `KB_DIR`, `PORT`, `HOST`, and `SITE_TITLE`. The default `HOST=0.0.0.0` is LAN-visible; use `HOST=127.0.0.1` for local-only work. Do not commit secrets from `.env`.
+Configuration is via environment variables: `KB_DIR`, `PORT`, `HOST`, and `SITE_TITLE`. The default `HOST=localhost` binds loopback only, so the viewer is reachable from this machine and nowhere else; set `HOST=0.0.0.0` deliberately to expose it on the LAN. Do not commit secrets from `.env`.

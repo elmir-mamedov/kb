@@ -12,8 +12,9 @@ npm run dev      # http://localhost:4000, auto-reloads on file changes
 npm run mcp      # stdio MCP server for local agent/client integrations
 ```
 
-For the team on your LAN it already binds to `0.0.0.0`, so others reach it at
-`http://<your-machine-ip>:4000`.
+It binds to `localhost` only, so nothing outside this machine can reach it. To
+share it with the team on your LAN, start it with `HOST=0.0.0.0` and they reach
+it at `http://<your-machine-ip>:4000`.
 
 ## Configuration (env vars)
 
@@ -21,7 +22,7 @@ For the team on your LAN it already binds to `0.0.0.0`, so others reach it at
 |--------------|----------------|------------------------------------------|
 | `KB_DIR`     | `../kb`        | Path to the content folder.              |
 | `PORT`       | `4000`         | Port to listen on.                       |
-| `HOST`       | `0.0.0.0`      | Bind address (`0.0.0.0` = LAN-visible).  |
+| `HOST`       | `localhost`    | Bind address (this machine only; `0.0.0.0` = LAN-visible). |
 | `SITE_TITLE` | `Knowledge Base` | Name shown in the sidebar/title.       |
 | `AUTH_USERNAME` | required   | Username for browser sign-in.            |
 | `AUTH_PASSWORD` | required   | Password for browser sign-in.            |
