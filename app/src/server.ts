@@ -30,6 +30,7 @@ import {
   removeNote,
   splitFrontmatter,
   updateNote,
+  type NoteKind,
 } from "./notes.js";
 import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
@@ -1069,6 +1070,11 @@ function resolveAnchor(body: string, line: number, hash: string): number | null 
   return blocks.find((b) => b.hash === hash)?.line ?? null;
 }
 
+/** The note kind a form field names, or undefined if it names none of them. */
+function noteKindOf(value: string | null): NoteKind | undefined {
+  return value === "task" || value === "remark" || value === "highlight" ? value : undefined;
+}
+
 /**
  * Add, edit or resolve an inline note. Fetch-driven like `/_move`, because the
  * reader stays on the page rather than navigating away from it.
@@ -1097,17 +1103,26 @@ app.post("/_notes/*", async (req, reply) => {
     nextBody = removed;
     message = `Resolve note on ${relPath} via web`;
   } else if (op === "edit") {
-    const text = (formString(req.body, "text") ?? "").trim();
-    if (!text) return reply.code(400).send({ ok: false, error: "Write the note first." });
+    const noteId = formString(req.body, "noteId") ?? "";
+    const current = parseNotes(body).find((note) => note.id === noteId);
+    if (!current) {
+      return reply
+        .code(409)
+        .send({ ok: false, error: "That note is already gone. Reload the page." });
+    }
 
-    const kind = formString(req.body, "kind");
+    // An absent or unrecognised kind leaves the note's own rather than quietly
+    // retyping it — so whether an empty text is allowed is judged on the kind the
+    // note ends up with, not the one it was sent with.
+    const kind = noteKindOf(formString(req.body, "kind"));
+    const text = (formString(req.body, "text") ?? "").trim();
+    if (!text && (kind ?? current.kind) !== "highlight") {
+      return reply.code(400).send({ ok: false, error: "Write the note first." });
+    }
+
     // The note keeps its anchor, its id and its timestamp — only what the writer
-    // retyped changes. An absent or unrecognised kind leaves the note's own
-    // rather than quietly retyping it.
-    const edited = updateNote(body, formString(req.body, "noteId") ?? "", {
-      text,
-      kind: kind === "remark" || kind === "task" ? kind : undefined,
-    });
+    // retyped changes.
+    const edited = updateNote(body, noteId, { text, kind });
     if (edited === null) {
       return reply
         .code(409)
@@ -1116,8 +1131,17 @@ app.post("/_notes/*", async (req, reply) => {
     nextBody = edited;
     message = `Edit note on ${relPath} via web`;
   } else {
+    // An absent or unrecognised kind reads as a task, the same way the parser
+    // reads a hand-written note that names none.
+    const kind = noteKindOf(formString(req.body, "kind")) ?? "task";
     const text = (formString(req.body, "text") ?? "").trim();
-    if (!text) return reply.code(400).send({ ok: false, error: "Write the note first." });
+    const quote = normalizeQuote(formString(req.body, "quote") ?? "");
+    // A highlight *is* the marked phrase, so it saves with nothing typed; the
+    // other two kinds are messages and would say nothing without one. A highlight
+    // with no quote either would be a note with neither words nor a mark.
+    if (!text && !(kind === "highlight" && quote)) {
+      return reply.code(400).send({ ok: false, error: "Write the note first." });
+    }
 
     const line = resolveAnchor(
       body,
@@ -1130,10 +1154,9 @@ app.post("/_notes/*", async (req, reply) => {
         .send({ ok: false, error: "This page changed. Reload and try again." });
     }
 
-    const quote = normalizeQuote(formString(req.body, "quote") ?? "");
     nextBody = insertNote(body, line, {
       id: newNoteId(),
-      kind: formString(req.body, "kind") === "remark" ? "remark" : "task",
+      kind,
       // Seconds are plenty for something a person reads as "2h ago".
       at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
       by: AUTH_USERNAME,

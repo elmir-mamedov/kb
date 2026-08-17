@@ -503,24 +503,49 @@ test("notes: a note is rewritten and re-typed in its own card", () => {
     html,
     /send\(\{ op: "edit", noteId: note\.id, text: text, kind: picker\.kind\(\) \}, save\)/
   );
-  // The Task/Remark switch is the composer's, so both paths offer both kinds.
-  assert.match(html, /function kindPicker\(current\)/);
-  assert.match(html, /const picker = kindPicker\(note\.kind\)/);
-  assert.match(html, /const picker = kindPicker\("task"\)/);
+  // The kind switch is the composer's, so both paths offer all three kinds.
+  assert.match(html, /function kindPicker\(current, onChange\)/);
+  assert.match(html, /const picker = kindPicker\(note\.kind, \(kind\) =>/);
+  assert.match(html, /const picker = kindPicker\("highlight", \(kind\) =>/);
 });
 
-test("notes: tasks are rose and remarks stay teal", () => {
+test("notes: the switch offers highlight, remark, task — highlight first", () => {
   const html = layout(pageView());
-  // Every theme block defines the palette; one missing it renders a task unstyled.
+  assert.match(
+    html,
+    /\["highlight", "Highlight",[^\]]+\],\s*\["remark", "Remark",[^\]]+\],\s*\["task", "Task",/
+  );
+  // A highlight is the mark itself, so it is the one kind that saves empty —
+  // which is the whole point of not having to type "!!" into a remark.
+  assert.equal(html.split(/!text && picker\.kind\(\) !== "highlight"/).length - 1, 2);
+  // ...and the card it is read in shows no empty text block where its words aren't.
+  assert.match(html, /if \(note\.text\) \{\s*const body = document\.createElement\("div"\)/);
+});
+
+test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
+  const html = layout(pageView());
+  // Every theme block defines both palettes; one missing them renders unstyled.
   assert.equal(html.split("--task-bg:").length - 1, 3);
-  assert.match(html, /--task-pin:#fa5785/);
+  assert.equal(html.split("--highlight-bg:").length - 1, 3);
+  assert.match(html, /--task-pin:#a855f7/);
+  assert.match(html, /--highlight-pin:#eab308/);
   // The kind's palette rides on the element, so the rules that draw a note are
   // shared and a remark keeps the teal it always had.
   assert.match(html, /\.note-mark\.is-task,[^{]+\{\s*--note-bg:var\(--task-bg\)/);
+  assert.match(html, /\.note-mark\.is-highlight,[^{]+\{\s*--note-bg:var\(--highlight-bg\)/);
   assert.match(html, /\.note-kind\.is-remark\{background:var\(--surface-hover\)/);
   assert.match(html, /mark\.className = "note-mark is-" \+ note\.kind/);
-  // A single task among remarks colours the one pin the block gets.
-  assert.match(html, /pin\.classList\.toggle\("is-task", !allRemarks\)/);
+  // One pin per block, coloured by the loudest kind on it.
+  assert.match(html, /pin\.classList\.toggle\("is-task", loudest === "task"\)/);
+  assert.match(html, /pin\.classList\.toggle\("is-highlight", loudest === "highlight"\)/);
+});
+
+test("notes: the kind switch gets its own row, so no kind is clipped", () => {
+  const html = layout(pageView());
+  // Three kinds beside Cancel and Save overflow the 320px panel, and .note-kinds
+  // hides its overflow — which silently swallowed the third option.
+  assert.match(html, /\.note-kinds\{display:flex; flex:1 0 100%/);
+  assert.match(html, /\.note-composer-actions,\.note-card-actions\{[^}]*flex-wrap:wrap/);
 });
 
 test("notes: the pin finds a legal host inside list and table blocks", () => {

@@ -46,6 +46,37 @@ test("a note with no quote round-trips, and reports no quote", () => {
   assert.equal(parsed.text, "Rewrite this paragraph.");
 });
 
+test("a highlight round-trips as a quote with no text at all", () => {
+  const parsed = roundTrip(note({ kind: "highlight", quote: "the phrase", text: "" }));
+  assert.equal(parsed.kind, "highlight");
+  assert.equal(parsed.quote, "the phrase");
+  // Nothing was typed, so there is nothing to read back — the mark is the note.
+  assert.equal(parsed.text, "");
+  // And the block is the header, the quote and the terminator, nothing else.
+  assert.equal(formatNote(note({ kind: "highlight", quote: "x", text: "" })).split("\n").length, 3);
+});
+
+test("an unrecognised kind still reads as a task", () => {
+  const body = [
+    "<!-- flux:note id=aaa kind=highlight",
+    "> marked phrase",
+    "-->",
+    "Annotated paragraph.",
+    "",
+    "<!-- flux:note id=bbb kind=nonsense",
+    "Do the thing.",
+    "-->",
+    "Another paragraph.",
+  ].join("\n");
+  assert.deepEqual(
+    parseNotes(body).map((n) => [n.id, n.kind]),
+    [
+      ["aaa", "highlight"],
+      ["bbb", "task"],
+    ]
+  );
+});
+
 test("note text containing --> does not end the comment early", () => {
   const text = "The arrow --> here must survive.";
   const formatted = formatNote(note({ text }));
@@ -256,6 +287,19 @@ test("updateNote changes only what it is given", () => {
   assert.deepEqual(
     parseNotes(reworded).map((n) => [n.kind, n.text]),
     [["task", "Rewritten."]]
+  );
+});
+
+test("updateNote clears the text when a note is retyped as a highlight", () => {
+  const body = insertNote("Paragraph.", 0, note({ quote: "Paragraph", text: "Fix this." }));
+
+  // An empty text has to mean "drop the words", not "leave them" — otherwise a
+  // task retyped as a highlight would keep an instruction nobody can see.
+  const marked = updateNote(body, "n7k2m4x8", { kind: "highlight", text: "" });
+  assert.ok(marked !== null);
+  assert.deepEqual(
+    parseNotes(marked).map((n) => [n.kind, n.quote, n.text]),
+    [["highlight", "Paragraph", ""]]
   );
 });
 

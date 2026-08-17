@@ -21,8 +21,12 @@ import { randomBytes } from "node:crypto";
  * sits, keeping the id it was written with — git keeps the history of both.
  */
 
-/** How a note should be treated by an agent reading the page. */
-export type NoteKind = "task" | "remark";
+/**
+ * How a note should be treated by an agent reading the page. A `task` asks for a
+ * change, a `remark` is context to respect — and a `highlight` asks for nothing
+ * at all: it marks a phrase as worth remembering, so it usually has no text.
+ */
+export type NoteKind = "task" | "remark" | "highlight";
 
 export interface Note {
   /**
@@ -38,6 +42,7 @@ export interface Note {
   by?: string;
   /** The selected text this note was attached to, whitespace-collapsed to one line. */
   quote?: string;
+  /** The message left on the block; empty for a highlight, which carries none. */
   text: string;
   /** 0-based line in the body where the note's opening `<!--` sits. */
   line: number;
@@ -182,7 +187,7 @@ function scanNotes(body: string): ScannedNote[] {
         id: attrs.get("id") || `@${i}`,
         // Anything unrecognised (or absent) reads as a task: a note someone
         // wrote by hand without a kind is almost always an instruction.
-        kind: kind === "remark" ? "remark" : "task",
+        kind: kind === "remark" || kind === "highlight" ? kind : "task",
         at: attrs.get("at") ?? "",
         by: attrs.get("by"),
         quote: quote || undefined,
@@ -217,6 +222,7 @@ export function formatNote(note: Omit<Note, "line">): string {
   // quote line. This matters when the note has no quote of its own, where the
   // two would otherwise be indistinguishable; the parser undoes exactly this.
   if (text.startsWith(">")) text = "&gt;" + text.slice(1);
+  // A highlight has no message, so its block is the header and the quote alone.
   if (text) {
     if (note.quote) lines.push("");
     lines.push(text);
@@ -244,6 +250,9 @@ export function insertNote(body: string, at: number, note: Omit<Note, "line">): 
  * timestamp, author, quote, and the position that anchors it — is carried over:
  * this is the same note amended, not a new one, and git holds the before and
  * after. Returns the new body, or `null` if no note has that id.
+ *
+ * An empty `text` clears the message rather than being ignored — that is how a
+ * note retyped as a highlight drops the words it no longer needs.
  *
  * A note written by hand without an `id=` is addressed by position, which is not
  * a durable handle; rewriting one stamps a real id on it so the next edit can

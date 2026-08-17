@@ -2074,12 +2074,18 @@ const NOTES_SCRIPT = `
 
       block.classList.add("has-note");
       const kinds = present.map((id) => byId.get(id).kind);
-      // One pin stands for every note on the block, so a single task among
-      // remarks colours it: the block has something waiting on it either way.
-      const allRemarks = kinds.every((kind) => kind === "remark");
+      // One pin stands for every note on the block, so the loudest kind on it
+      // wins: a single task among remarks still means something is waiting, and
+      // a highlight only colours the pin when nothing else does.
+      const loudest = kinds.includes("task")
+        ? "task"
+        : kinds.includes("remark")
+          ? "remark"
+          : "highlight";
       const pin = pinFor(block);
-      pin.classList.toggle("is-remark", allRemarks);
-      pin.classList.toggle("is-task", !allRemarks);
+      pin.classList.toggle("is-task", loudest === "task");
+      pin.classList.toggle("is-remark", loudest === "remark");
+      pin.classList.toggle("is-highlight", loudest === "highlight");
       pin.setAttribute("aria-label", present.length + " note" + (present.length === 1 ? "" : "s"));
       pin.title = present.length === 1 ? "1 note" : present.length + " notes";
 
@@ -2093,28 +2099,54 @@ const NOTES_SCRIPT = `
   // --- the controls shared by writing and rewriting --------------------------
 
   /**
-   * The Task/Remark switch. The composer and the in-place editor share it, so a
-   * note can be re-typed as the other kind with the same two words it was first
-   * typed with. Callers read the kind() getter when they submit rather than
-   * tracking the choice themselves.
+   * The three kinds, in the order the switch offers them and with the tooltip
+   * each one carries. Highlight leads and is the default because marking a
+   * passage is the most common thing to want and the only one that asks for
+   * nothing: no words, no work for anyone reading the page later.
    */
-  function kindPicker(current) {
+  const KINDS = [
+    ["highlight", "Highlight", "Marks the phrase — nothing to write"],
+    ["remark", "Remark", "Context, not an instruction"],
+    ["task", "Task", "Something an agent should change"],
+  ];
+
+  /** A kind's label, falling back to Task the way the parser does. */
+  function kindLabel(kind) {
+    const found = KINDS.find((option) => option[0] === kind);
+    return found ? found[1] : "Task";
+  }
+
+  /** What the text box asks for, which is nothing at all for a highlight. */
+  function placeholderFor(kind) {
+    if (kind === "highlight") return "Optional — a highlight needs no words";
+    if (kind === "remark") return "Context worth keeping";
+    return "What should change here?";
+  }
+
+  /**
+   * The Highlight/Remark/Task switch. The composer and the in-place editor share
+   * it, so a note can be re-typed as another kind with the same three words it
+   * was first typed with. Callers read the kind() getter when they submit rather
+   * than tracking the choice themselves; onChange exists only so the text box can
+   * say whether it still needs filling in.
+   */
+  function kindPicker(current, onChange) {
     const element = document.createElement("div");
     element.className = "note-kinds";
-    let kind = current === "remark" ? "remark" : "task";
-    for (const option of [["task", "Task"], ["remark", "Remark"]]) {
+    let kind = KINDS.some((option) => option[0] === current) ? current : "task";
+    for (const option of KINDS) {
       const button = document.createElement("button");
       button.type = "button";
       button.className =
         "note-kind-option is-" + option[0] + (option[0] === kind ? " is-selected" : "");
       button.textContent = option[1];
-      button.title =
-        option[0] === "task" ? "Something an agent should change" : "Context, not an instruction";
+      button.title = option[2];
       button.addEventListener("click", () => {
         kind = option[0];
         for (const sibling of element.children) {
           sibling.classList.toggle("is-selected", sibling === button);
         }
+        if (onChange) onChange(kind);
       });
       element.appendChild(button);
     }
@@ -2122,12 +2154,12 @@ const NOTES_SCRIPT = `
   }
 
   /** The note text box, prefilled when an existing note is being rewritten. */
-  function noteField(text) {
+  function noteField(text, kind) {
     const field = document.createElement("textarea");
     field.className = "note-input";
     field.rows = 3;
     field.value = text;
-    field.placeholder = "What should change here?";
+    field.placeholder = placeholderFor(kind);
     return field;
   }
 
@@ -2168,7 +2200,7 @@ const NOTES_SCRIPT = `
       row.className = "note-card-head";
       const kind = document.createElement("span");
       kind.className = "note-kind is-" + note.kind;
-      kind.textContent = note.kind === "remark" ? "Remark" : "Task";
+      kind.textContent = kindLabel(note.kind);
       row.appendChild(kind);
       const when = document.createElement("span");
       when.className = "note-when";
@@ -2194,10 +2226,12 @@ const NOTES_SCRIPT = `
       actions.className = "note-card-actions";
 
       if (editing) {
-        const field = noteField(note.text);
+        const field = noteField(note.text, note.kind);
         card.appendChild(field);
 
-        const picker = kindPicker(note.kind);
+        const picker = kindPicker(note.kind, (kind) => {
+          field.placeholder = placeholderFor(kind);
+        });
         actions.appendChild(picker.element);
 
         const cancel = actionButton("Cancel", "secondary");
@@ -2207,7 +2241,10 @@ const NOTES_SCRIPT = `
         const save = actionButton("Save", "primary");
         const submit = () => {
           const text = field.value.trim();
-          if (!text) {
+          // A highlight is the mark itself, so it is the one kind that saves with
+          // an empty box — including a task or remark retyped into one, which
+          // drops the words it no longer needs.
+          if (!text && picker.kind() !== "highlight") {
             field.focus();
             return;
           }
@@ -2228,10 +2265,14 @@ const NOTES_SCRIPT = `
         return;
       }
 
-      const body = document.createElement("div");
-      body.className = "note-text";
-      body.textContent = note.text;
-      card.appendChild(body);
+      // A highlight has no words of its own — the mark in the prose is the whole
+      // note — so the card shows its head and its actions and nothing between.
+      if (note.text) {
+        const body = document.createElement("div");
+        body.className = "note-text";
+        body.textContent = note.text;
+        card.appendChild(body);
+      }
 
       const edit = actionButton("Edit", "secondary");
       edit.addEventListener("click", (event) => swap(true, event));
@@ -2420,13 +2461,15 @@ const NOTES_SCRIPT = `
     quote.textContent = "\\u201c" + anchor.quote + "\\u201d";
     composer.appendChild(quote);
 
-    const field = noteField("");
+    const field = noteField("", "highlight");
     composer.appendChild(field);
 
     const row = document.createElement("div");
     row.className = "note-composer-actions";
 
-    const picker = kindPicker("task");
+    const picker = kindPicker("highlight", (kind) => {
+      field.placeholder = placeholderFor(kind);
+    });
     row.appendChild(picker.element);
 
     const cancel = actionButton("Cancel", "secondary");
@@ -2436,7 +2479,9 @@ const NOTES_SCRIPT = `
     const save = actionButton("Save", "primary");
     const submit = () => {
       const text = field.value.trim();
-      if (!text) {
+      // Highlight is the default kind, so Save straight after selecting a phrase
+      // marks it and nothing else — which is the point of having the kind.
+      if (!text && picker.kind() !== "highlight") {
         field.focus();
         return;
       }
@@ -2524,12 +2569,17 @@ const STYLES = `
   --surface:#fff; --surface-hover:#eef0f3; --surface-hover-2:#f7f8fa;
   --active-bg:#e7efff; --selected-bg:#dbeafe;
   --mark-bg:#fde68a; --mark-bg-strong:#fcd34d; --mark-fg:#713f12;
-  /* Notes are teal, deliberately nowhere near the amber of a search hit… */
+  /* A note is teal by default, which is what a remark keeps… */
   --note-bg:#ccfbf1; --note-bg-strong:#99f6e4; --note-fg:#115e59;
   --note-pin:#0d9488; --note-border:#5eead4;
-  /* …except a task, which asks for a change and is rose so it reads as one. */
-  --task-bg:#ffe4e6; --task-bg-strong:#fecdd3; --task-fg:#9f1239;
-  --task-pin:#fa5785; --task-border:#fda4af;
+  /* …a task is purple, because it asks for a change and should read as one… */
+  --task-bg:#f3e8ff; --task-bg-strong:#e9d5ff; --task-fg:#6b21a8;
+  --task-pin:#a855f7; --task-border:#d8b4fe;
+  /* …and a highlight is yellow, the colour a hand reaches for a pen for. It sits
+     close to the amber of a search hit on purpose: both mean "look here", and a
+     search mark only ever appears in the sidebar, never in the prose. */
+  --highlight-bg:#fef08a; --highlight-bg-strong:#fde047; --highlight-fg:#713f12;
+  --highlight-pin:#eab308; --highlight-border:#facc15;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -2557,8 +2607,10 @@ const STYLES = `
   --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
   --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
   --note-pin:#2dd4bf; --note-border:#0f766e;
-  --task-bg:#881337; --task-bg-strong:#9f1239; --task-fg:#fecdd3;
-  --task-pin:#fa5785; --task-border:#be123c;
+  --task-bg:#4c1d95; --task-bg-strong:#5b21b6; --task-fg:#e9d5ff;
+  --task-pin:#a855f7; --task-border:#6d28d9;
+  --highlight-bg:#5c4708; --highlight-bg-strong:#7a5f0a; --highlight-fg:#f5d67b;
+  --highlight-pin:#eab308; --highlight-border:#8a6d0b;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2588,8 +2640,10 @@ const STYLES = `
     --mark-bg:#5c4708; --mark-bg-strong:#7a5f0a; --mark-fg:#f5d67b;
     --note-bg:#134e4a; --note-bg-strong:#115e59; --note-fg:#99f6e4;
     --note-pin:#2dd4bf; --note-border:#0f766e;
-    --task-bg:#881337; --task-bg-strong:#9f1239; --task-fg:#fecdd3;
-    --task-pin:#fa5785; --task-border:#be123c;
+    --task-bg:#4c1d95; --task-bg-strong:#5b21b6; --task-fg:#e9d5ff;
+    --task-pin:#a855f7; --task-border:#6d28d9;
+    --highlight-bg:#5c4708; --highlight-bg-strong:#7a5f0a; --highlight-fg:#f5d67b;
+    --highlight-pin:#eab308; --highlight-border:#8a6d0b;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2929,13 +2983,19 @@ body.dragging-page .space-current{
    lays out exactly as it did before this feature existed. The pin sits in the
    left padding of .content (40px, 20px on mobile) — hence the two offsets. */
 .prose [data-flux-notes]{position:relative}
-/* A task carries its own palette on the element, so every rule below stays
-   kind-agnostic and a remark keeps the teal it always had. Leaf elements only:
-   swapping the tokens on a container would leak into the Remark button of the
-   kind switch nested inside a card. */
+/* A task and a highlight each carry their own palette on the element, so every
+   rule below stays kind-agnostic and a remark keeps the teal it always had. Leaf
+   elements only: swapping the tokens on a container would leak into the Remark
+   button of the kind switch nested inside a card. */
 .note-mark.is-task,.note-pin.is-task,.note-kind.is-task,.note-kind-option.is-task{
   --note-bg:var(--task-bg); --note-bg-strong:var(--task-bg-strong);
   --note-fg:var(--task-fg); --note-pin:var(--task-pin); --note-border:var(--task-border);
+}
+.note-mark.is-highlight,.note-pin.is-highlight,.note-kind.is-highlight,
+.note-kind-option.is-highlight{
+  --note-bg:var(--highlight-bg); --note-bg-strong:var(--highlight-bg-strong);
+  --note-fg:var(--highlight-fg); --note-pin:var(--highlight-pin);
+  --note-border:var(--highlight-border);
 }
 .prose mark.note-mark{
   background:var(--note-bg); color:var(--note-fg);
@@ -2975,10 +3035,15 @@ body.dragging-page .space-current{
   width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
   background:var(--bg); color:var(--fg); font:inherit; font-size:14px; resize:vertical;
 }
-.note-composer-actions,.note-card-actions{display:flex; align-items:center; gap:8px}
-.note-kinds{display:inline-flex; margin-right:auto; border:1px solid var(--line); border-radius:6px; overflow:hidden}
+.note-composer-actions,.note-card-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+/* Three kinds alongside Cancel and Save do not fit across a 320px panel, and a
+   clipped third kind is one nobody finds — so the switch takes the full width of
+   its own row and splits it evenly. Reading a note shows no switch, so the
+   Edit/Resolve row below is unaffected. */
+.note-kinds{display:flex; flex:1 0 100%; border:1px solid var(--line); border-radius:6px; overflow:hidden}
 .note-kind-option{
-  padding:4px 10px; border:0; background:var(--surface); color:var(--muted);
+  flex:1; padding:4px 8px; text-align:center;
+  border:0; background:var(--surface); color:var(--muted);
   font:inherit; font-size:13px; cursor:pointer;
 }
 .note-kind-option.is-selected{background:var(--note-bg); color:var(--note-fg); font-weight:600}
