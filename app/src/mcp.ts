@@ -8,8 +8,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { Content, flatten, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
+import { collectNotes } from "./note-index.js";
 import { parseNotes, type Note, type NoteKind } from "./notes.js";
-import { mapWithConcurrency, searchPages } from "./search.js";
+import { searchPages } from "./search.js";
 import { syncFromEnv } from "./sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -176,54 +177,24 @@ interface ListedNote extends Note {
 /**
  * Every inline note across the KB, or within one space or page.
  *
- * Scoping to a space goes through the full tree rather than `spaceTree`, which
- * deliberately omits the space's own landing page — a note left there is still a
- * note, and silently skipping it would be the worst kind of miss.
+ * The sweep itself lives in `note-index.ts`, shared with the web dashboard. This
+ * only swaps each page's absolute `fsPath` for the KB-relative one MCP clients
+ * expect — spelled out rather than spread so the emitted key order stays put.
  */
-async function collectNotes(
+async function collectListedNotes(
   filter: TreeFilter,
   opts: { space?: string; slug?: string; kind?: NoteKind }
 ): Promise<ListedNote[]> {
-  let nodes: PageNode[];
-  if (opts.slug !== undefined) {
-    const top = await content.tree(filter);
-    const node = flatten(top).find((n) => n.slug === cleanSlug(opts.slug!));
-    nodes = node ? [node] : [];
-  } else if (opts.space) {
-    const top = await content.tree(filter);
-    const key = content.spaceKeyOf(opts.space);
-    const node = key ? top.find((n) => n.slug === key) : undefined;
-    nodes = node ? flatten([node]) : [];
-  } else {
-    nodes = flatten(await content.tree(filter));
-  }
-
-  const pages = await mapWithConcurrency(nodes, 32, async (node) => {
-    if (node.isFolder) return null; // a pure container has no body to annotate
-    try {
-      return await content.load(node.slug);
-    } catch {
-      return null; // skip pages with unreadable or invalid frontmatter
-    }
-  });
-
-  const found: ListedNote[] = [];
-  for (const page of pages) {
-    if (!page) continue;
-    for (const note of parseNotes(page.body)) {
-      if (opts.kind && note.kind !== opts.kind) continue;
-      found.push({
-        ...note,
-        page: {
-          slug: page.slug,
-          id: page.data.id,
-          title: page.data.title,
-          path: kbRelPath(page.fsPath),
-        },
-      });
-    }
-  }
-  return found;
+  const found = await collectNotes(content, filter, opts);
+  return found.map((note) => ({
+    ...note,
+    page: {
+      slug: note.page.slug,
+      id: note.page.id,
+      title: note.page.title,
+      path: kbRelPath(note.page.fsPath),
+    },
+  }));
 }
 
 const filterSchema = z.enum(["live", "archived", "all"]);
@@ -390,7 +361,7 @@ server.registerTool(
   async ({ slug, space, kind, filter, limit }) => {
     const selectedFilter = filter ?? "live";
     const selectedLimit = limit ?? 50;
-    const found = await collectNotes(selectedFilter, { space, slug, kind });
+    const found = await collectListedNotes(selectedFilter, { space, slug, kind });
     return textResult({
       filter: selectedFilter,
       space: space ?? null,

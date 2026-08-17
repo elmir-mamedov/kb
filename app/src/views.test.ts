@@ -1,14 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  dashboardLayout,
   layout,
   folderLayout,
   spacesLayout,
+  type DashboardView,
   type PageView,
   type FolderView,
   type SpacesView,
 } from "./views.js";
 import type { PageNode } from "./content.js";
+import type { IndexedNote } from "./note-index.js";
 
 /** A leaf-page tree node fixture (fills in the required flags). */
 function node(overrides: Partial<PageNode> & Pick<PageNode, "slug" | "title">): PageNode {
@@ -32,6 +35,48 @@ function pageView(overrides: Partial<PageView> = {}): PageView {
     titles: new Map([["flux/notes", "Notes"]]),
     title: "Notes",
     contentHtml: "<p>hi</p>",
+    username: "alice",
+    ...overrides,
+  };
+}
+
+/** A task note as the dashboard receives it, already paired with its page. */
+function note(overrides: Partial<IndexedNote> = {}): IndexedNote {
+  return {
+    id: "aaa11111",
+    kind: "task",
+    at: "2026-08-17T10:00:00Z",
+    by: "elmir",
+    quote: "the workers",
+    text: "restart them",
+    line: 4,
+    page: { slug: "flux/deploy", title: "Deploy", fsPath: "/kb/flux/deploy.md" },
+    ...overrides,
+  };
+}
+
+function dashboardView(overrides: Partial<DashboardView> = {}): DashboardView {
+  return {
+    siteTitle: "KB",
+    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaceKey: "flux",
+    tree: [],
+    titles: new Map([["flux", "Flux"]]),
+    spaceTitle: "Flux",
+    groups: [
+      {
+        slug: "flux/deploy",
+        title: "Deploy",
+        notes: [note(), note({ id: "bbb22222", line: 20, text: "and the queue" })],
+      },
+    ],
+    summary: {
+      total: 2,
+      pages: 2,
+      oldestAt: "2026-08-17T10:00:00Z",
+      newestAt: "2026-08-17T11:00:00Z",
+    },
+    now: Date.parse("2026-08-17T12:00:00Z"),
     username: "alice",
     ...overrides,
   };
@@ -549,4 +594,158 @@ test("notes: the pin finds a legal host inside list and table blocks", () => {
   // A <button> is invalid as a direct child of <ul>/<ol>/<table>.
   assert.match(html, /if \(tag === "UL" \|\| tag === "OL"\) return block\.querySelector\("li"\)/);
   assert.match(html, /if \(tag === "TABLE"\) return block\.querySelector\("th, td"\)/);
+});
+
+test("dashboard: the corner button links to the space being viewed", () => {
+  const html = layout(pageView());
+  assert.match(html, /class="dash-button" href="\/_dashboard\?space=flux"/);
+});
+
+test("dashboard: no button outside a space, where it would report on nothing", () => {
+  // The spaces home page has no current space — the same reason it ships no
+  // sidebar search.
+  const html = spacesLayout({
+    siteTitle: "KB",
+    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    username: "alice",
+  } satisfies SpacesView);
+  // The stylesheet still carries the rule — it is the anchor that must be absent.
+  assert.doesNotMatch(html, /class="dash-button"/);
+  assert.doesNotMatch(html, /href="\/_dashboard/);
+});
+
+test("dashboard: the space key is URL-encoded, not pasted into the href raw", () => {
+  const html = layout(pageView({ spaceKey: "a b&c" }));
+  assert.match(html, /href="\/_dashboard\?space=a%20b%26c"/);
+});
+
+test("dashboard: each task links to its own note anchor, not the page top", () => {
+  const html = dashboardLayout(dashboardView());
+  assert.match(html, /href="\/flux\/deploy#note-aaa11111"/);
+  assert.match(html, /class="task-count">2</);
+});
+
+test("dashboard: a positional note id survives the trip into the fragment", () => {
+  // A hand-written note with no id= gets an `@<line>` one; unencoded it would not
+  // survive the URL, and the client decodes it back before the lookup.
+  const html = dashboardLayout(
+    dashboardView({
+      groups: [
+        {
+          slug: "flux/deploy",
+          title: "Deploy",
+          notes: [note({ id: "@12" })],
+        },
+      ],
+    })
+  );
+  assert.match(html, /#note-%4012"/);
+});
+
+test("dashboard: note text and quotes are escaped, never trusted as markup", () => {
+  const html = dashboardLayout(
+    dashboardView({
+      groups: [
+        {
+          slug: "flux/deploy",
+          title: "<script>t</script>",
+          notes: [
+            note({ text: "<script>alert(1)</script>", quote: "<img src=x onerror=1>" }),
+          ],
+        },
+      ],
+    })
+  );
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("dashboard: a page's location reads as section titles, not slug segments", () => {
+  const html = dashboardLayout(
+    dashboardView({
+      titles: new Map([
+        ["flux", "Flux"],
+        ["flux/runbooks", "Runbooks"],
+        ["flux/runbooks/deep", "Deep Dives"],
+        ["flux/runbooks/deep/deploy", "Deploy"],
+      ]),
+      groups: [
+        { slug: "flux/runbooks/deep/deploy", title: "Deploy", notes: [note()] },
+      ],
+    })
+  );
+  // The space is implied and the leaf is already the heading beside it.
+  assert.match(html, /class="task-crumb">Runbooks \/ Deep Dives</);
+  assert.doesNotMatch(html, /task-crumb">flux/);
+});
+
+test("dashboard: an untitled section falls back to its slug segment", () => {
+  const html = dashboardLayout(
+    dashboardView({
+      titles: new Map([["flux", "Flux"]]),
+      groups: [{ slug: "flux/runbooks/deploy", title: "Deploy", notes: [note()] }],
+    })
+  );
+  assert.match(html, /class="task-crumb">runbooks</);
+});
+
+test("dashboard: a page at the space root gets no location line at all", () => {
+  const html = dashboardLayout(
+    dashboardView({ groups: [{ slug: "flux/deploy", title: "Deploy", notes: [note()] }] })
+  );
+  // The stylesheet still carries the rule — it is the span that must be absent.
+  assert.doesNotMatch(html, /class="task-crumb"/);
+});
+
+test("dashboard: the counts are pluralized against what they count", () => {
+  const one = dashboardLayout(
+    dashboardView({
+      summary: { total: 1, pages: 1, oldestAt: "", newestAt: "" },
+    })
+  );
+  assert.match(one, /<span class="stat-label">open task<\/span>/);
+  assert.match(one, /<span class="stat-label">page<\/span>/);
+
+  const many = dashboardLayout(dashboardView());
+  assert.match(many, /<span class="stat-label">open tasks<\/span>/);
+  assert.match(many, /<span class="stat-label">pages<\/span>/);
+});
+
+test("dashboard: an empty space says so instead of showing a bare heading", () => {
+  const html = dashboardLayout(
+    dashboardView({ groups: [], summary: { total: 0, pages: 0, oldestAt: "", newestAt: "" } })
+  );
+  assert.match(html, /No task notes in <strong>Flux<\/strong>/);
+  // The oldest-age card has nothing to report, and says nothing rather than "0".
+  assert.match(html, /<span class="stat-value">—<\/span>/);
+});
+
+test("dashboard: a task with no message reads as a bare mark, not a blank row", () => {
+  const html = dashboardLayout(
+    dashboardView({
+      groups: [
+        { slug: "flux/deploy", title: "Deploy", notes: [note({ text: "" })] },
+      ],
+    })
+  );
+  assert.match(html, /No message — just marked\./);
+});
+
+test("dashboard: the page's own notes payload and script stay off it", () => {
+  // canEdit:false, so there is nothing to annotate here and NOTES_SCRIPT — which
+  // would find no article of notes — is not shipped.
+  const html = dashboardLayout(dashboardView());
+  assert.doesNotMatch(html, /id="flux-notes"/);
+});
+
+test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () => {
+  const html = layout(pageView());
+  assert.match(html, /location\.hash \|\| ""\)\.replace\(\/\^#note-\/, ""\)/);
+  assert.match(html, /anchor\.scrollIntoView\(\{ block: "center" \}\)/);
+  assert.match(html, /openPopover\(anchor, \[id\]\)/);
+  assert.match(html, /window\.addEventListener\("hashchange", focusFromHash\)/);
+  // Ids are compared by splitting the attribute, not with a ~= selector that an
+  // `@<line>` id would break.
+  assert.doesNotMatch(html, /data-flux-notes~=/);
 });

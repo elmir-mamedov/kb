@@ -22,6 +22,7 @@ import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
 import { createRenderer, sourceBlocks } from "./markdown.js";
+import { collectNotes, groupNotesByPage, summarizeNotes } from "./note-index.js";
 import {
   insertNote,
   newNoteId,
@@ -35,6 +36,7 @@ import {
 import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
   archiveLayout,
+  dashboardLayout,
   deleteLayout,
   diffLayout,
   editLayout,
@@ -473,6 +475,40 @@ async function renderArchiveBrowser(): Promise<string> {
     spaces,
     archiveTree,
     titles,
+    username: AUTH_USERNAME,
+  });
+}
+
+/**
+ * The notes dashboard for one space: its open task notes, counted and grouped.
+ *
+ * `archived` widens the tree filter the way `/_search` does — a `live` tree drops
+ * an archived space's own node and every page under it, so a dashboard scoped to
+ * one would report nothing at all.
+ */
+async function renderNotesDashboard(
+  spaceKey: string,
+  spaceTitle: string,
+  archived: boolean
+): Promise<string> {
+  const filter = archived ? "all" : "live";
+  const [spaces, tree, titles, notes] = await Promise.all([
+    content.spaces(),
+    content.spaceTree(spaceKey, filter),
+    content.titleIndex(),
+    collectNotes(content, filter, { space: spaceKey, kind: "task" }),
+  ]);
+
+  return dashboardLayout({
+    siteTitle: SITE_TITLE,
+    spaces,
+    spaceKey,
+    tree,
+    titles,
+    spaceTitle,
+    groups: groupNotesByPage(notes),
+    summary: summarizeNotes(notes),
+    now: Date.now(),
     username: AUTH_USERNAME,
   });
 }
@@ -1257,6 +1293,34 @@ app.get("/_search", async (req, reply) => {
 
 app.get("/_archive", async (_req, reply) => {
   return reply.type("text/html").send(await renderArchiveBrowser());
+});
+
+/**
+ * The dashboard reports on one space, named by `?space=`. The corner button only
+ * appears while a space is active and carries its key, so a request without one
+ * was typed by hand: send it to the space picker rather than guessing.
+ */
+app.get("/_dashboard", async (req, reply) => {
+  // Derived from authenticated content and stale the moment a note is written.
+  reply.header("cache-control", "no-store");
+
+  const spaceKey = content.spaceKeyOf(queryString(req.query, "space") ?? "");
+  if (!spaceKey) return reply.redirect("/", 303);
+
+  // Membership doubles as the traversal guard: spaceKeyOf("../etc") yields "..",
+  // which is not a space, so it 404s rather than escaping the KB.
+  const space = (await content.spaces("all")).find((s) => s.key === spaceKey);
+  if (!space) {
+    const spaces = await content.spaces();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, spaceKey, spaces, AUTH_USERNAME));
+  }
+
+  return reply
+    .type("text/html")
+    .send(await renderNotesDashboard(space.key, space.title, space.archived));
 });
 
 async function handleArchiveMutation(

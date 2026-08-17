@@ -1,5 +1,6 @@
 import type { PageNode, SpaceInfo } from "./content.js";
 import type { DiffLine } from "./diff.js";
+import { relativeAge, type NotePageGroup, type NoteSummary } from "./note-index.js";
 import type { Note } from "./notes.js";
 
 export function escapeHtml(s: string): string {
@@ -204,6 +205,23 @@ export interface ArchiveView {
   username?: string | null;
 }
 
+export interface DashboardView {
+  siteTitle: string;
+  spaces: SpaceInfo[];
+  spaceKey: string;
+  /** The active space's own tree, so the sidebar reads as it does on any page in it. */
+  tree: PageNode[];
+  titles: Map<string, string>;
+  /** Display name of the space being reported on. */
+  spaceTitle: string;
+  /** Task notes in this space, already grouped per page. */
+  groups: NotePageGroup[];
+  summary: NoteSummary;
+  /** Evaluated once per render so every age on the page is measured from one instant. */
+  now: number;
+  username?: string | null;
+}
+
 export interface DeleteView {
   siteTitle: string;
   spaces: SpaceInfo[];
@@ -371,10 +389,24 @@ function themeToggle(): string {
   </button>`;
 }
 
-/** Help + theme toggle + username + Log out pinned to the top-right corner. */
-function sessionCorner(username?: string | null): string {
+/**
+ * Link to the current space's dashboard. A plain anchor, so it needs no handler
+ * of its own — and it only appears when a space is active, the same rule the
+ * sidebar search follows: the dashboard reports on one space, and the home page
+ * is not in one.
+ */
+function dashboardLink(spaceKey: string): string {
+  if (!spaceKey) return "";
+  return `<a class="dash-button" href="/_dashboard?space=${encodeURIComponent(spaceKey)}" aria-label="Notes dashboard" title="Notes dashboard">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></svg>
+  </a>`;
+}
+
+/** Dashboard + theme toggle + Help + username + Log out pinned to the top-right corner. */
+function sessionCorner(username?: string | null, spaceKey = ""): string {
   if (!username) return "";
   return `<div class="session-corner">
+    ${dashboardLink(spaceKey)}
     ${themeToggle()}
     <button type="button" class="button secondary" data-help-open>Help</button>
     ${sessionActions(username)}
@@ -469,7 +501,7 @@ export function layout(v: PageView): string {
 <html lang="en">
 ${renderHead(`${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
-${sessionCorner(v.username)}
+${sessionCorner(v.username, v.spaceKey)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchiveView)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
@@ -570,7 +602,7 @@ export function folderLayout(v: FolderView): string {
 <html lang="en">
 ${renderHead(`${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
-${sessionCorner(v.username)}
+${sessionCorner(v.username, v.spaceKey)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, false)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
@@ -611,6 +643,130 @@ export function archiveLayout(v: ArchiveView): string {
     contentHtml: archiveHtml,
     canEdit: false,
     isArchiveView: true,
+    username: v.username,
+  });
+}
+
+/**
+ * Where a page sits, as the titles of the sections above it.
+ *
+ * The space is dropped (every row on the dashboard is in the same one) and so is
+ * the leaf, which is already the heading this sits beside. Titles rather than
+ * slug segments, because a trail of `recommendation-removing-the-sharepoint-hop`
+ * is longer than the note it is meant to place and reads as noise.
+ */
+function sectionTrail(slug: string, titles: Map<string, string>): string {
+  const parts = slug.split("/");
+  const trail: string[] = [];
+  let acc = parts[0] ?? "";
+  for (let i = 1; i < parts.length - 1; i += 1) {
+    acc = `${acc}/${parts[i]}`;
+    trail.push(titles.get(acc) ?? parts[i]);
+  }
+  return trail.join(" / ");
+}
+
+/** One statistic, big number over a label. */
+function statCard(value: string, label: string): string {
+  return `<div class="stat-card">
+      <span class="stat-value">${escapeHtml(value)}</span>
+      <span class="stat-label">${escapeHtml(label)}</span>
+    </div>`;
+}
+
+/**
+ * One task note: the phrase it was left on, what it asks for, and who asked when.
+ *
+ * The whole row is the link, pointing at the note's own anchor on its page rather
+ * than the top of it — a page with fifteen notes is otherwise a scavenger hunt.
+ * Every field here was written into a file by a person or an agent, so all of it
+ * is escaped, exactly as the `#flux-notes` payload treats the same strings.
+ */
+function noteRow(note: NotePageGroup["notes"][number], slug: string, now: number): string {
+  const href = `${slugPath(slug)}#note-${encodeURIComponent(note.id)}`;
+  const quote = note.quote
+    ? `<span class="task-quote">${escapeHtml(note.quote)}</span>`
+    : "";
+  // A task with no words is legal (the parser defaults an unlabelled note to
+  // task), and reads as a bare mark on the phrase — say so rather than showing a
+  // blank row.
+  const text = note.text
+    ? `<span class="task-text">${escapeHtml(note.text)}</span>`
+    : `<span class="task-text is-empty">No message — just marked.</span>`;
+  const age = relativeAge(note.at, now);
+  const byline = [note.by, age].filter(Boolean).join(" · ");
+
+  return `<li class="task-item">
+      <a class="task-link" href="${href}">
+        ${quote}
+        ${text}
+        ${byline ? `<span class="task-by">${escapeHtml(byline)}</span>` : ""}
+      </a>
+    </li>`;
+}
+
+/**
+ * The notes dashboard for one space: how much work is waiting, and every piece of
+ * it as a link to where it was left.
+ *
+ * Only `task` notes appear. A remark is context and a highlight is a reader's
+ * bookmark — neither asks for anything, so counting them here would blunt the one
+ * question this page answers.
+ */
+export function dashboardLayout(v: DashboardView): string {
+  const oldest = relativeAge(v.summary.oldestAt, v.now);
+  const cards = [
+    statCard(String(v.summary.total), v.summary.total === 1 ? "open task" : "open tasks"),
+    statCard(String(v.summary.pages), v.summary.pages === 1 ? "page" : "pages"),
+    statCard(oldest ? oldest.replace(/ ago$/, "") : "—", "oldest"),
+  ].join("\n    ");
+
+  const groups = v.groups
+    .map((group) => {
+      const trail = sectionTrail(group.slug, v.titles);
+      // Its own line rather than a column in the heading row: a deep trail is
+      // longer than the title it places, and squeezed beside one it would be
+      // ellipsised down to "Ingestions / O…".
+      const crumb = trail ? `<p class="task-crumb">${escapeHtml(trail)}</p>` : "";
+      const count = group.notes.length;
+      return `<section class="task-group">
+      <h2 class="task-group-head">
+        <a href="${slugPath(group.slug)}">${escapeHtml(group.title)}</a>
+        <span class="task-count">${count}</span>
+      </h2>
+      ${crumb}
+      <ul class="task-list">
+        ${group.notes.map((note) => noteRow(note, group.slug, v.now)).join("\n        ")}
+      </ul>
+    </section>`;
+    })
+    .join("\n    ");
+
+  const body = v.summary.total
+    ? `<div class="stat-row">
+    ${cards}
+  </div>
+  <div class="task-groups">
+    ${groups}
+  </div>`
+    : `<div class="stat-row">
+    ${cards}
+  </div>
+  <p class="dash-empty">No task notes in <strong>${escapeHtml(v.spaceTitle)}</strong>. Select a phrase on any page and leave one to queue up work here.</p>`;
+
+  return layout({
+    siteTitle: v.siteTitle,
+    spaces: v.spaces,
+    spaceKey: v.spaceKey,
+    tree: v.tree,
+    activeSlug: "",
+    titles: v.titles,
+    title: `${v.spaceTitle} · Tasks`,
+    contentHtml: `<div class="dash">
+  <p class="dash-lede">Task notes waiting in this space. Remarks and highlights are not counted.</p>
+  ${body}
+</div>`,
+    canEdit: false,
     username: v.username,
   });
 }
@@ -666,7 +822,7 @@ export function editLayout(v: EditView): string {
 <html lang="en">
 ${renderHead(`Edit ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
-${sessionCorner(v.username)}
+${sessionCorner(v.username, v.spaceKey)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
 <main class="content editor-content">
   ${breadcrumb(v.activeSlug, v.titles)}
@@ -772,7 +928,7 @@ export function diffLayout(v: DiffView): string {
 <html lang="en">
 ${renderHead(`History ${escapeHtml(v.title)} · ${escapeHtml(v.siteTitle)}`)}
 <body>
-${sessionCorner(v.username)}
+${sessionCorner(v.username, v.spaceKey)}
 ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
 <main class="content">
   ${breadcrumb(v.activeSlug, v.titles)}
@@ -2513,9 +2669,63 @@ const NOTES_SCRIPT = `
     field.focus();
   }
 
+  // --- arriving at one particular note ---------------------------------------
+
+  /**
+   * Open the note named by a \`#note-<id>\` fragment, which is how the dashboard
+   * links to a single task rather than to the top of its page.
+   *
+   * The anchor is found by walking the candidates and splitting their attribute,
+   * the way paint() does, rather than with a \`~=\` selector: a hand-written note
+   * gets a positional \`@<line>\` id, which would need escaping to be a valid one.
+   * A note that is already resolved leaves the page alone.
+   */
+  function focusFromHash() {
+    const raw = (location.hash || "").replace(/^#note-/, "");
+    if (!raw || raw === location.hash) return;
+    // A positional \`@<line>\` id arrives percent-encoded, so the fragment has to
+    // be decoded before it can be looked up.
+    let id = raw;
+    try {
+      id = decodeURIComponent(raw);
+    } catch (err) {
+      id = raw;
+    }
+    if (!byId.has(id)) return;
+
+    let anchor = null;
+    for (const mark of article.querySelectorAll("[data-note-mark]")) {
+      if (mark.getAttribute("data-note-mark") === id) {
+        anchor = mark;
+        break;
+      }
+    }
+    if (anchor) {
+      for (const mark of article.querySelectorAll("[data-note-mark]")) {
+        if (mark.getAttribute("data-note-mark") === id) mark.classList.add("is-active");
+      }
+    } else {
+      for (const block of article.querySelectorAll("[data-flux-notes]")) {
+        const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+        if (ids.indexOf(id) >= 0) {
+          anchor = block.querySelector(".note-pin");
+          break;
+        }
+      }
+    }
+    if (!anchor) return;
+
+    anchor.scrollIntoView({ block: "center" });
+    // After the scroll, so the popover is placed against the rect the anchor
+    // ends up with rather than the one it was at.
+    openPopover(anchor, [id]);
+  }
+
   // --- wiring ----------------------------------------------------------------
 
   paint();
+  focusFromHash();
+  window.addEventListener("hashchange", focusFromHash);
 
   document.addEventListener("selectionchange", () => {
     if (composer) return; // the composer owns the selection it was opened with
@@ -2882,12 +3092,15 @@ body.dragging-page .space-current{
 .session-user{color:var(--muted); font-size:13px}
 .session-corner{position:fixed; top:12px; right:16px; z-index:50;
   display:flex; align-items:center; gap:8px}
-.theme-toggle{
+/* The corner's two icon buttons share one box; only the theme toggle swaps its
+   glyph, so the rules below it stay on that class alone. */
+.theme-toggle,.dash-button{
   display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
   width:34px; height:34px; padding:0; border:1px solid var(--line); border-radius:6px;
   background:var(--surface); color:var(--fg-secondary); cursor:pointer;
 }
-.theme-toggle:hover{background:var(--surface-hover-2); color:var(--fg)}
+.theme-toggle:hover,.dash-button:hover{background:var(--surface-hover-2); color:var(--fg)}
+.dash-button svg{display:block}
 .theme-toggle .theme-icon{display:block}
 .theme-toggle .icon-moon{display:none}
 :root[data-theme="dark"] .theme-toggle .icon-sun{display:none}
@@ -3209,6 +3422,50 @@ body.dragging-page .space-current{
   font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
 .new-space-form input:focus{outline:2px solid var(--focus-ring-soft); border-color:var(--focus-ring)}
+/* Notes dashboard.
+   Rides the note palettes already defined for pins and marks — a task is purple
+   here for the same reason it is purple on the page it was left on. */
+.dash-lede{margin:0 0 20px; color:var(--fg-secondary); font-size:14px}
+.stat-row{display:flex; flex-wrap:wrap; gap:12px; margin-bottom:28px}
+.stat-card{
+  display:flex; flex-direction:column; gap:2px; min-width:96px;
+  padding:12px 16px; border:1px solid var(--line); border-radius:8px;
+  background:var(--surface);
+}
+.stat-value{font-size:24px; font-weight:600; line-height:1.1; color:var(--fg)}
+.stat-label{font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em}
+.task-group{margin-bottom:24px}
+.task-group-head{
+  display:flex; align-items:baseline; gap:8px; margin:0 0 2px;
+  font-size:15px; font-weight:600; border:none; padding:0;
+}
+.task-group-head a{color:var(--fg)}
+/* Clipped to one line by height rather than by white-space:nowrap. Nowrap text
+   raises the min-content width of everything around it, and .content is a flex
+   item sized by its automatic minimum — one long trail widened the whole page. */
+.task-crumb{
+  margin:0 0 8px; max-height:1.4em; overflow:hidden;
+  color:var(--muted); font-size:12px; line-height:1.4;
+}
+.task-count{
+  flex:0 0 auto; padding:1px 8px; border-radius:10px;
+  background:var(--task-bg); color:var(--task-fg); font-size:12px; font-weight:600;
+}
+.task-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px}
+.task-link{
+  display:flex; flex-direction:column; gap:3px;
+  padding:10px 12px 10px 14px; border:1px solid var(--line); border-radius:6px;
+  border-left:3px solid var(--task-pin); background:var(--surface); color:var(--fg);
+}
+.task-link:hover{background:var(--surface-hover); text-decoration:none}
+.task-quote{
+  color:var(--task-fg); background:var(--task-bg); border-radius:2px;
+  align-self:flex-start; padding:0 4px; font-size:13px;
+}
+.task-text{font-size:14px; line-height:1.45; white-space:pre-wrap}
+.task-text.is-empty{color:var(--muted); font-style:italic}
+.task-by{color:var(--muted); font-size:12px}
+.dash-empty{color:var(--fg-secondary)}
 @media(max-width:780px){
   body{flex-direction:column}
   .sidebar{width:auto; flex:none; height:auto; position:static; border-right:none;
