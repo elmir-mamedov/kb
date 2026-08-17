@@ -460,7 +460,8 @@ test("copy link: a toast is created up front and rises from below on copy", () =
   // Built on init, not on first use, so the aria-live region pre-exists its message.
   assert.match(html, /createElement\("div"\)/);
   assert.match(html, /toast\.setAttribute\("aria-live", "polite"\)/);
-  assert.match(html, /"Link copied"/);
+  // The wording names what was copied; a control with no label copies a link.
+  assert.match(html, /\(label \|\| "Link"\) \+ " copied"/);
   assert.match(html, /"Copy failed"/);
   // Class flip is deferred a frame so the offscreen start position gets painted.
   assert.match(html, /requestAnimationFrame\(\(\) => toast\.classList\.add\("is-visible"\)\)/);
@@ -640,6 +641,56 @@ test("dashboard: a positional note id survives the trip into the fragment", () =
     })
   );
   assert.match(html, /#note-%4012"/);
+});
+
+test("dashboard: each task carries a copy button holding its note reference", () => {
+  const html = dashboardLayout(dashboardView());
+  // Copied value is the id qualified by its page, so pasting it into a chat names
+  // both; the visible label is the bare id, to match against later.
+  assert.match(
+    html,
+    /<button type="button" class="task-copy" data-copy-slug="flux\/deploy#aaa11111" data-copy-label="Note ID"/
+  );
+  assert.match(html, /<span class="task-id">aaa11111<\/span>/);
+  assert.match(html, /data-copy-slug="flux\/deploy#bbb22222"/);
+});
+
+test("dashboard: the copy button is a sibling of the row link, not nested in it", () => {
+  // A <button> inside an <a> is invalid, and the click would fight the anchor.
+  const html = dashboardLayout(dashboardView());
+  assert.match(html, /<\/a>\s*<button type="button" class="task-copy"/);
+});
+
+test("dashboard: the copy button reuses the shared clipboard handler", () => {
+  const html = dashboardLayout(dashboardView());
+  // Same delegated [data-copy-slug] listener as Copy link — no second script.
+  assert.match(html, /target\.closest\("\[data-copy-slug\]"\)/);
+  // …which names what it copied, so this one's toast reads "Note ID copied".
+  assert.match(html, /getAttribute\("data-copy-label"\)/);
+  assert.match(html, /\(label \|\| "Link"\) \+ " copied"/);
+});
+
+test("dashboard: a note reference is escaped, quotes included", () => {
+  const html = dashboardLayout(
+    dashboardView({
+      groups: [
+        { slug: 'flux/a"b', title: "Odd", notes: [note({ id: '"><img src=x>' })] },
+      ],
+    })
+  );
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /data-copy-slug="flux\/a&quot;b#&quot;&gt;&lt;img src=x&gt;"/);
+});
+
+test("dashboard: a positional id is copied with its page, which is what locates it", () => {
+  // `@12` counts lines in one body and means nothing on its own; the slug is what
+  // makes the pasted reference resolvable.
+  const html = dashboardLayout(
+    dashboardView({
+      groups: [{ slug: "flux/deploy", title: "Deploy", notes: [note({ id: "@12" })] }],
+    })
+  );
+  assert.match(html, /data-copy-slug="flux\/deploy#@12"/);
 });
 
 test("dashboard: note text and quotes are escaped, never trusted as markup", () => {

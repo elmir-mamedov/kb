@@ -675,10 +675,29 @@ function statCard(value: string, label: string): string {
 }
 
 /**
- * One task note: the phrase it was left on, what it asks for, and who asked when.
+ * A note's handle for pasting into a chat: the page it lives on and the note's
+ * own id, e.g. `flux/idea#7uribe42`.
  *
- * The whole row is the link, pointing at the note's own anchor on its page rather
- * than the top of it — a page with fifteen notes is otherwise a scavenger hunt.
+ * The bare id is what the reader sees on the row, but it is not what gets copied.
+ * An agent handed `7uribe42` alone has to sweep every note in the KB to find it,
+ * and a hand-written note's id is only `@<line>` — a number that means nothing
+ * away from the page it was counted on. Prefixing the slug (the same string the
+ * page's own "Copy link" copies) makes the reference resolvable by itself: the
+ * page is named, and the id picks the note out of it.
+ */
+function noteRef(slug: string, id: string): string {
+  return `${slug}#${id}`;
+}
+
+/**
+ * One task note: the phrase it was left on, what it asks for, who asked when, and
+ * its id.
+ *
+ * The row is a link pointing at the note's own anchor on its page rather than the
+ * top of it — a page with fifteen notes is otherwise a scavenger hunt. The copy
+ * button is a sibling of that link, not a child: a button nested inside an anchor
+ * is invalid, and the two are separate destinations anyway.
+ *
  * Every field here was written into a file by a person or an agent, so all of it
  * is escaped, exactly as the `#flux-notes` payload treats the same strings.
  */
@@ -695,6 +714,7 @@ function noteRow(note: NotePageGroup["notes"][number], slug: string, now: number
     : `<span class="task-text is-empty">No message — just marked.</span>`;
   const age = relativeAge(note.at, now);
   const byline = [note.by, age].filter(Boolean).join(" · ");
+  const ref = escapeHtml(noteRef(slug, note.id));
 
   return `<li class="task-item">
       <a class="task-link" href="${href}">
@@ -702,6 +722,10 @@ function noteRow(note: NotePageGroup["notes"][number], slug: string, now: number
         ${text}
         ${byline ? `<span class="task-by">${escapeHtml(byline)}</span>` : ""}
       </a>
+      <button type="button" class="task-copy" data-copy-slug="${ref}" data-copy-label="Note ID" title="Copy note ID — ${ref}" aria-label="Copy note ID ${ref}">
+        ${COPY_GLYPH}
+        <span class="task-id">${escapeHtml(note.id)}</span>
+      </button>
     </li>`;
 }
 
@@ -1102,6 +1126,9 @@ const FOLDER_ICON = `<svg class="tree-folder-icon" viewBox="0 0 16 16" width="14
 /** Inline dot glyph prefixed to leaf-page rows (a content page with no children). */
 const PAGE_DOT = `<svg class="tree-page-dot" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg>`;
 
+/** Two stacked sheets: the copy affordance on the dashboard's note-id buttons. */
+const COPY_GLYPH = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></svg>`;
+
 /** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
 const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   <form method="dialog" class="help-head">
@@ -1160,23 +1187,27 @@ const EDIT_SHORTCUT_SCRIPT = `
 `;
 
 /**
- * "Copy link" for the current page / any sidebar row. Copies the page's relative
- * address — its slug, which starts with the space key and ends with the leaf
- * (e.g. `flux/backlog`). Three entry points share this one handler:
+ * Copy-to-clipboard for anything addressable. Mostly a page's relative address —
+ * its slug, which starts with the space key and ends with the leaf (e.g.
+ * `flux/backlog`) — so the copied string lives in `data-copy-slug`. Four entry
+ * points share this one handler:
  *   1. Cmd/Ctrl+Shift+L copies the page being viewed.
  *   2. The sidebar ⋯ menu's "Copy link" copies that row's slug.
  *   3. The page-header "Copy link" button copies the current page.
- * Buttons carry the slug in `data-copy-slug`; the current page's button is also
- * tagged `data-copy-link` so the shortcut can find it (falling back to the active
- * sidebar row on views without a header button, e.g. the editor/history).
- * Clipboard access degrades gracefully: it prefers the async Clipboard API and
- * falls back to a hidden-textarea `execCommand("copy")` for non-secure origins
- * (the default LAN host is plain HTTP, where `navigator.clipboard` is absent).
+ *   4. The dashboard's per-task button copies that note's `slug#id` reference.
+ * The current page's button is also tagged `data-copy-link` so the shortcut can
+ * find it (falling back to the active sidebar row on views without a header
+ * button, e.g. the editor/history). Clipboard access degrades gracefully: it
+ * prefers the async Clipboard API and falls back to a hidden-textarea
+ * `execCommand("copy")` for non-secure origins (the default LAN host is plain
+ * HTTP, where `navigator.clipboard` is absent).
  *
  * Every entry point confirms the same two ways: the control that was used tints
  * green or red, and a toast rises from the bottom of the window for a couple of
  * seconds. The toast is what covers the keyboard shortcut, whose target control
- * may be scrolled out of view or missing altogether.
+ * may be scrolled out of view or missing altogether. It names what was copied, so
+ * a control that copies something other than a link says so via
+ * `data-copy-label`; a control without one is copying a link.
  */
 const COPY_LINK_SCRIPT = `
 (() => {
@@ -1216,8 +1247,8 @@ const COPY_LINK_SCRIPT = `
   document.body.appendChild(toast);
   let toastTimer = 0;
 
-  function showToast(ok) {
-    toast.textContent = ok ? "Link copied" : "Copy failed";
+  function showToast(ok, label) {
+    toast.textContent = ok ? (label || "Link") + " copied" : "Copy failed";
     toast.classList.toggle("is-error", !ok);
     window.clearTimeout(toastTimer);
     // Flip the class on the next frame so the browser has painted the offscreen
@@ -1238,9 +1269,9 @@ const COPY_LINK_SCRIPT = `
       el.classList.remove("copied", "copy-failed");
     }, 1200);
   }
-  function confirmCopy(el, ok) {
+  function confirmCopy(el, ok, label) {
     flash(el, ok);
-    showToast(ok);
+    showToast(ok, label);
   }
   document.addEventListener("click", (event) => {
     const target = event.target;
@@ -1248,7 +1279,8 @@ const COPY_LINK_SCRIPT = `
     if (!btn) return;
     event.preventDefault();
     const slug = btn.getAttribute("data-copy-slug") || "";
-    copyText(slug).then((ok) => confirmCopy(btn, ok));
+    const label = btn.getAttribute("data-copy-label");
+    copyText(slug).then((ok) => confirmCopy(btn, ok, label));
   });
   document.addEventListener("keydown", (event) => {
     if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return;
@@ -3452,12 +3484,32 @@ body.dragging-page .space-current{
   background:var(--task-bg); color:var(--task-fg); font-size:12px; font-weight:600;
 }
 .task-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px}
+/* The row is the positioning context for the copy button pinned inside its
+   top-right corner; .task-link reserves that corner in its own padding so no
+   line of note text ever runs under it. */
+.task-item{position:relative}
 .task-link{
   display:flex; flex-direction:column; gap:3px;
-  padding:10px 12px 10px 14px; border:1px solid var(--line); border-radius:6px;
+  padding:10px 104px 10px 14px; border:1px solid var(--line); border-radius:6px;
   border-left:3px solid var(--task-pin); background:var(--surface); color:var(--fg);
 }
 .task-link:hover{background:var(--surface-hover); text-decoration:none}
+/* The note's own handle. The id is shown, not just copied, so a reference pasted
+   into a chat can be matched back to the row it came from; what lands on the
+   clipboard is that id qualified with its page (space/…/page#id). Quiet until
+   pointed at — it sits on every row, and a column of loud chips would compete
+   with the notes themselves. */
+.task-copy{
+  position:absolute; top:9px; right:9px;
+  display:inline-flex; align-items:center; gap:5px;
+  padding:2px 7px; border:1px solid var(--line); border-radius:6px;
+  background:var(--surface); color:var(--muted); cursor:pointer;
+  font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.task-copy:hover{background:var(--surface-hover-2); border-color:var(--task-border); color:var(--fg)}
+.task-copy:focus-visible{outline:2px solid var(--focus-ring-soft); outline-offset:1px}
+.task-copy.copied{background:var(--success-bg); border-color:var(--success-border); color:var(--success-fg)}
+.task-copy.copy-failed{background:var(--error-bg); border-color:var(--error-border); color:var(--error-fg)}
 .task-quote{
   color:var(--task-fg); background:var(--task-bg); border-radius:2px;
   align-self:flex-start; padding:0 4px; font-size:13px;
@@ -3475,6 +3527,10 @@ body.dragging-page .space-current{
   .content{padding:20px}
   .page-head{display:block}
   .actions{margin-bottom:16px}
+  /* Too little width to spend 90px of it on an id that is about to be copied
+     anyway: the glyph alone keeps the button, and the tooltip keeps the id. */
+  .task-copy .task-id{display:none}
+  .task-link{padding-right:44px}
   /* Less left padding to hang the pin in, so it tucks in closer. */
   .note-pin{left:-17px; width:11px; height:11px}
 }
