@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   dashboardLayout,
+  editLayout,
   layout,
   folderLayout,
   spacesLayout,
   type DashboardView,
+  type EditView,
   type PageView,
   type FolderView,
   type SpacesView,
@@ -570,7 +572,10 @@ test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
   assert.equal(html.split("--task-bg:").length - 1, 3);
   assert.equal(html.split("--highlight-bg:").length - 1, 3);
   assert.match(html, /--task-pin:#a855f7/);
-  assert.match(html, /--highlight-pin:#eab308/);
+  // The highlight pin is the one token that cannot be shared across themes: a
+  // yellow dark enough to be seen on white disappears on the dark page.
+  assert.equal(html.split("--highlight-pin:#9aa300").length - 1, 1);
+  assert.equal(html.split("--highlight-pin:#e2e800").length - 1, 2);
   // The kind's palette rides on the element, so the rules that draw a note are
   // shared and a remark keeps the teal it always had.
   assert.match(html, /\.note-mark\.is-task,[^{]+\{\s*--note-bg:var\(--task-bg\)/);
@@ -799,4 +804,143 @@ test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () =>
   // Ids are compared by splitting the attribute, not with a ~= selector that an
   // `@<line>` id would break.
   assert.doesNotMatch(html, /data-flux-notes~=/);
+});
+
+// --- space instructions -----------------------------------------------------
+
+function editView(over: Partial<EditView> = {}): EditView {
+  return {
+    siteTitle: "KB",
+    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaceKey: "flux",
+    tree: [],
+    activeSlug: "flux/notes",
+    titles: new Map([["flux/notes", "Notes"]]),
+    title: "Notes",
+    raw: "---\ntitle: Notes\n---\n# Notes\n",
+    username: "elmir",
+    ...over,
+  };
+}
+
+test("space instructions: the corner link appears only inside a space", () => {
+  const inSpace = dashboardLayout(dashboardView());
+  assert.match(inSpace, /class="instructions-button" href="\/_instructions\?space=flux"/);
+
+  // No active space (the archive browser, a 404) — nothing to point at.
+  const noSpace = dashboardLayout(dashboardView({ spaceKey: "" }));
+  assert.doesNotMatch(noSpace, /href="\/_instructions/);
+});
+
+test("space instructions: the space key is URL-encoded in the link", () => {
+  const html = dashboardLayout(dashboardView({ spaceKey: "a b&c" }));
+  assert.match(html, /href="\/_instructions\?space=a%20b%26c"/);
+  assert.doesNotMatch(html, /space=a b&c/);
+});
+
+test("space instructions: an ordinary edit page gets no hint and no counter", () => {
+  const html = editLayout(editView());
+  // Anchor on the markup, not the bare class: the inlined stylesheet always
+  // carries the `.instructions-hint` rule, so a class-name match false-positives.
+  assert.doesNotMatch(html, /class="instructions-hint"/);
+  assert.doesNotMatch(html, /data-instructions-count/);
+  // The slug-rename field is the normal affordance.
+  assert.match(html, /<input id="slug" name="slug"/);
+});
+
+test("space instructions: the instructions editor swaps slug rename for a counter", () => {
+  const html = editLayout(
+    editView({
+      activeSlug: "flux/_instructions",
+      title: "Flux instructions",
+      instructions: { cap: 2000, spaceTitle: "Flux" },
+    })
+  );
+
+  assert.match(html, /class="instructions-hint"/);
+  assert.match(html, /data-instructions-count/);
+  assert.match(html, /<span data-instructions-cap>2000<\/span>/);
+  // Renaming this file would break the mechanism that finds it.
+  assert.doesNotMatch(html, /<input id="slug" name="slug"/);
+  // It still posts to the ordinary editor endpoint.
+  assert.match(html, /action="\/_edit\/flux\/_instructions"/);
+});
+
+test("space instructions: the counter script ships only on that editor", () => {
+  const plain = editLayout(editView());
+  assert.doesNotMatch(plain, /data-instructions-cap/);
+
+  const html = editLayout(
+    editView({
+      activeSlug: "flux/_instructions",
+      instructions: { cap: 2000, spaceTitle: "Flux" },
+    })
+  );
+  // The counter measures the body, not the frontmatter, since that is what is
+  // delivered to the LLM and measured against the cap.
+  assert.match(html, /const bodyOf = \(raw\)/);
+  assert.match(html, /area\.addEventListener\("input", render\)/);
+});
+
+test("space instructions: the space title is escaped in the hint", () => {
+  const html = editLayout(
+    editView({
+      activeSlug: "flux/_instructions",
+      instructions: { cap: 2000, spaceTitle: '<img src=x onerror=alert(1)>' },
+    })
+  );
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;img src=x/);
+});
+
+test("space instructions: the hint states it is hidden and LLM-read-only", () => {
+  const html = editLayout(
+    editView({
+      activeSlug: "flux/_instructions",
+      instructions: { cap: 2000, spaceTitle: "Flux" },
+    })
+  );
+  assert.match(html, /hidden from the sidebar and from search/);
+  assert.match(html, /the LLM cannot edit it/);
+  // The freshness promise is the thing a reader most needs to trust.
+  assert.match(html, /no restart needed/);
+});
+
+/**
+ * Every inline script must at least parse.
+ *
+ * The client-side code in views.ts lives inside template literals and never
+ * executes under `npm test`, so a lone `\n` in a regex or comment silently
+ * collapses into a real newline and breaks the whole script — with no test, no
+ * typecheck error, and no server-side symptom. Parsing each emitted script is
+ * the cheapest guard that catches it.
+ */
+test("views: every inline script in every layout parses as JavaScript", () => {
+  const pages: Array<[string, string]> = [
+    ["page", layout(pageView())],
+    ["folder", folderLayout({ ...pageView(), children: [] } as unknown as FolderView)],
+    ["dashboard", dashboardLayout(dashboardView())],
+    ["spaces", spacesLayout({ siteTitle: "KB", spaces: [], username: "u" } as SpacesView)],
+    ["edit", editLayout(editView())],
+    [
+      "edit-instructions",
+      editLayout(
+        editView({
+          activeSlug: "flux/_instructions",
+          instructions: { cap: 2000, spaceTitle: "Flux" },
+        })
+      ),
+    ],
+  ];
+
+  for (const [name, html] of pages) {
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    assert.ok(scripts.length > 0, `${name}: expected at least one inline script`);
+    for (const [i, src] of scripts.entries()) {
+      assert.doesNotThrow(
+        () => new Function(src),
+        `${name}: inline script #${i} does not parse`
+      );
+    }
+  }
 });

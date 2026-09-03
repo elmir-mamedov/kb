@@ -35,6 +35,12 @@ import {
 } from "./notes.js";
 import { searchPages, searchTokens, type SearchHit } from "./search.js";
 import {
+  CHAR_CAP,
+  ensureSpaceInstructions,
+  instructionsSlug,
+  isInstructionsSlug,
+} from "./space-instructions.js";
+import {
   archiveLayout,
   dashboardLayout,
   deleteLayout,
@@ -550,6 +556,13 @@ async function renderEditPage(
   const spaceKey = content.spaceKeyOf(page.slug);
   const tree = await content.spaceTree(spaceKey);
   const fallbackTitle = page.slug.split("/").pop() || "Home";
+
+  // A space's instructions file is deliberately absent from the title index (the
+  // tree walk skips `_`-prefixed entries), so name it here rather than falling
+  // back to the raw "_instructions" leaf.
+  const isInstructions = isInstructionsSlug(page.slug);
+  const spaceTitle = spaces.find((s) => s.key === spaceKey)?.title ?? spaceKey;
+
   const html = editLayout({
     siteTitle: SITE_TITLE,
     spaces,
@@ -557,11 +570,14 @@ async function renderEditPage(
     tree,
     activeSlug: page.slug,
     titles,
-    title: titles.get(page.slug) ?? fallbackTitle,
+    title: isInstructions
+      ? `${spaceTitle} instructions`
+      : titles.get(page.slug) ?? fallbackTitle,
     raw: options.raw ?? page.raw,
     error: options.error,
     notice: options.notice,
     username: AUTH_USERNAME,
+    instructions: isInstructions ? { cap: CHAR_CAP, spaceTitle } : undefined,
   });
   return { status: options.error ? 400 : 200, html };
 }
@@ -1300,6 +1316,49 @@ app.get("/_archive", async (_req, reply) => {
  * appears while a space is active and carries its key, so a request without one
  * was typed by hand: send it to the space picker rather than guessing.
  */
+/**
+ * Open a space's standing instructions for editing.
+ *
+ * The file has to exist before the editor can open it, so this scaffolds an
+ * empty one on first visit, commits it, and hands off to the ordinary page
+ * editor — `<space>/_instructions` resolves like any other slug, so saving,
+ * diffing and auto-commit all work unchanged from there.
+ */
+app.get("/_instructions", async (req, reply) => {
+  reply.header("cache-control", "no-store");
+
+  const spaceKey = content.spaceKeyOf(queryString(req.query, "space") ?? "");
+  if (!spaceKey) return reply.redirect("/", 303);
+
+  // Membership doubles as the traversal guard, as on /_dashboard.
+  const space = (await content.spaces("all")).find((s) => s.key === spaceKey);
+  if (!space) {
+    const spaces = await content.spaces();
+    return reply
+      .code(404)
+      .type("text/html")
+      .send(notFound(SITE_TITLE, spaceKey, spaces, AUTH_USERNAME));
+  }
+
+  try {
+    const ensured = await ensureSpaceInstructions(content, space.key);
+    if (ensured.created) {
+      const commit = await git.commitFiles(
+        ensured.changedFsPaths,
+        `Create ${git.kbRelPath(ensured.fsPath)} via web`
+      );
+      if (!commit) req.log?.warn?.("space instructions scaffolded but nothing to commit");
+    }
+  } catch (err) {
+    const { status, html } = await renderEditPage(instructionsSlug(space.key), {
+      error: `Could not open the space instructions: ${errorMessage(err)}`,
+    });
+    return reply.code(status).type("text/html").send(html);
+  }
+
+  return reply.redirect(`/_edit/${instructionsSlug(space.key)}`, 303);
+});
+
 app.get("/_dashboard", async (req, reply) => {
   // Derived from authenticated content and stale the moment a note is written.
   reply.header("cache-control", "no-store");

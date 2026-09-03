@@ -782,3 +782,139 @@ test("issue #3: folders and spaces also get a stable id", async () => {
     await kb.cleanup();
   }
 });
+
+// --- cross-space moves ------------------------------------------------------
+
+test("movePage refuses to move a page between spaces", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await seedSpace(content, "Notes");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+
+    // Each space is its own git repo, so this would tear the page out of the
+    // history that owns it.
+    await assert.rejects(
+      () => content.movePage(page.slug, "notes"),
+      /cannot move between spaces/
+    );
+
+    // Nothing moved.
+    assert.equal(await pathExists(page.fsPath), true);
+    assert.equal(await content.resolve("notes/deploy"), null);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("movePage still allows a move within one space", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    const home = await content.createPage("docs", "Runbooks", "# Runbooks\n");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+
+    const moved = await content.movePage(page.slug, home.slug);
+    assert.equal(moved?.oldSlug, "docs/deploy");
+    assert.equal(moved?.newSlug, "docs/runbooks/deploy");
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+// --- id preservation on update ----------------------------------------------
+
+test("updateRaw restores the on-disk id when the new source omits it", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+
+    // What a caller that never read the page produces: valid frontmatter, no id.
+    const mutation = await content.updateRaw(page.slug, "---\ntitle: Deploy\n---\n# Rewritten\n");
+    assert.equal(mutation?.idPreserved, true);
+
+    const reloaded = await content.load(page.slug);
+    assert.equal(reloaded?.data.id, page.id, "the stable id must survive");
+    assert.match(reloaded?.body ?? "", /# Rewritten/);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("updateRaw refuses to let a caller change an existing id", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+
+    const mutation = await content.updateRaw(
+      page.slug,
+      "---\ntitle: Deploy\nid: totallymadeup\n---\n# Rewritten\n"
+    );
+    assert.equal(mutation?.idPreserved, true);
+    assert.equal((await content.load(page.slug))?.data.id, page.id);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("updateRaw leaves a correct id untouched and reports no repair", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+
+    const mutation = await content.updateRaw(
+      page.slug,
+      `---\ntitle: Deploy\nid: ${page.id}\n---\n# Rewritten\n`
+    );
+    assert.notEqual(mutation, null);
+    assert.notEqual(mutation?.idPreserved, true);
+    assert.equal((await content.load(page.slug))?.data.id, page.id);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("updateRaw: stripping only the id is a no-op that still reports the slip", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    const page = await content.createPage("docs", "Deploy", "# Deploy\n");
+    const before = await fs.readFile(page.fsPath, "utf8");
+
+    const withoutId = before.replace(/^id: .*\n/m, "");
+    const mutation = await content.updateRaw(page.slug, withoutId);
+
+    // Restored, so the file is byte-identical and there is nothing to commit —
+    // but the caller is still told the id was missing.
+    assert.equal(mutation?.idPreserved, true);
+    assert.equal(await fs.readFile(page.fsPath, "utf8"), before);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("updateRaw adds no id to a page that never had one", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    // Pages predating the id backfill validate without one; nothing to preserve.
+    const fsPath = path.join(kb.dir, "docs", "legacy.md");
+    await fs.writeFile(fsPath, "---\ntitle: Legacy\n---\n# Legacy\n", "utf8");
+
+    const mutation = await content.updateRaw("docs/legacy", "---\ntitle: Legacy\n---\n# Newer\n");
+    assert.notEqual(mutation?.idPreserved, true);
+    assert.equal((await content.load("docs/legacy"))?.data.id, undefined);
+  } finally {
+    await kb.cleanup();
+  }
+});

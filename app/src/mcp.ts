@@ -11,6 +11,14 @@ import { makeGit } from "./git.js";
 import { collectNotes } from "./note-index.js";
 import { parseNotes, type Note, type NoteKind } from "./notes.js";
 import { searchPages } from "./search.js";
+import {
+  instructionsPayload,
+  isInstructionsSlug,
+  loadSpaceInstructions,
+  makeInstructionsTokens,
+  missingTokenMessage,
+  type InstructionsPayload,
+} from "./space-instructions.js";
 import { syncFromEnv } from "./sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -199,6 +207,86 @@ async function collectListedNotes(
 
 const filterSchema = z.enum(["live", "archived", "all"]);
 
+/**
+ * Per-space standing orders, and the read-before-write gate around them.
+ *
+ * The tokens are per-process, which is per-session: the server is stdio only and
+ * the client spawns one process per connection, so a token cannot be carried
+ * over from a previous session. See `space-instructions.ts` for why that matters.
+ */
+const instructionTokens = makeInstructionsTokens();
+
+/** The `spaceInstructions` param shared by every space-scoped write tool. */
+const instructionTokenSchema = z
+  .string()
+  .optional()
+  .describe(
+    "The `spaceInstructions.token` from a tool result scoped to this space (or from kb_get_space_instructions). Required when the space has standing instructions; omit it for spaces that have none. If this call is refused, the current instructions and a fresh token come back with the refusal — follow them and retry once."
+  );
+
+/**
+ * Attach a space's instructions to a result, when it has any.
+ *
+ * Read from disk on every call. `Content.load` shares the mtime-keyed parse
+ * cache, so a repeat read costs one `fs.stat` — which is what lets an edit made
+ * in the browser reach the model on the very next tool call, with no restart.
+ */
+async function withInstructions<T extends object>(
+  spaceKey: string,
+  payload: T
+): Promise<T & { spaceInstructions?: InstructionsPayload }> {
+  const instructions = await loadSpaceInstructions(content, spaceKey);
+  if (!instructions) return payload;
+  return { ...payload, spaceInstructions: instructionsPayload(instructions, instructionTokens) };
+}
+
+/** Space keys that carry instructions — the roster for cross-space results. */
+async function instructedSpaces(filter: TreeFilter): Promise<string[]> {
+  const spaces = await content.spaces(filter);
+  const flags = await Promise.all(
+    spaces.map(async (space) => ((await loadSpaceInstructions(content, space.key)) ? space.key : null))
+  );
+  return flags.filter((key): key is string => key !== null);
+}
+
+/**
+ * Refuse a write into an instructed space unless the caller proves it received
+ * those instructions this session. Returns an error result to hand straight
+ * back, or null when the write may proceed.
+ *
+ * A space with no instructions is never gated — otherwise adding this feature
+ * would break every write in every space that has not authored a file yet.
+ */
+async function gateWrite(spaceKey: string, provided: string | undefined) {
+  const instructions = await loadSpaceInstructions(content, spaceKey);
+  if (!instructions) return null;
+  if (instructionTokens.verify(spaceKey, instructions.text, provided)) return null;
+  const stale = typeof provided === "string" && provided.trim() !== "";
+  return errorResult(missingTokenMessage(instructions, instructionTokens, stale));
+}
+
+/**
+ * A fresh token for a successful write's result, so a create → update chain
+ * needs only the one read that opened it.
+ */
+async function writeToken(spaceKey: string): Promise<{ spaceInstructions?: string }> {
+  const instructions = await loadSpaceInstructions(content, spaceKey);
+  if (!instructions) return {};
+  return { spaceInstructions: instructionTokens.tokenFor(spaceKey, instructions.text) };
+}
+
+/**
+ * Keep the tools off a space's instructions file. These are the human's standing
+ * orders; a model quietly loosening its own constraints is the failure you cannot
+ * diagnose from the page it produced.
+ */
+function refuseInstructionsPath(slug: string) {
+  if (!isInstructionsSlug(slug)) return null;
+  return errorResult(
+    "A space's instructions are edited only from the Flux web UI (the Space instructions button, top right). They are the space owner's standing orders, so the tools will not change them. You can read them with kb_get_space_instructions."
+  );
+}
+
 const server = new McpServer(
   {
     name: "flux-kb",
@@ -206,7 +294,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces (top-level containers; the first segment of every page slug). Each space is its own git repo, so every page must live inside a space. A folder is a pure container (no body): it only holds pages and other folders — it is not a content page, cannot be updated, and is excluded from kb_search. Read with kb_list_spaces, kb_search, kb_get_page, kb_list_pages (each listed page reports isFolder), and kb_list_notes; pass `space` to kb_list_pages, kb_search or kb_list_notes to scope to a single space. Write with kb_create_page (single-shot create from title + body), kb_create_folder (a pure container), kb_update_page (replace a page's raw Markdown — rejected for folders), kb_rename_folder (change a folder's display name), kb_archive_page / kb_restore_page (toggle archived state), kb_move_page (re-parent), kb_rename_page (change a page's URL slug), kb_delete_page (permanent), and kb_create_space (new top-level container). Every write is auto-committed to its space's git repo as `... via mcp`. LINKING: every page has a stable `id` (returned by kb_get_page, kb_list_pages, kb_search, and the create tools). To link to another page from Markdown, prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves. INLINE NOTES: a page's Markdown may contain `<!-- flux:note id=... kind=task|remark|highlight ... -->` comments, each anchored directly above the block it refers to, with the annotated phrase on a `> ` line inside it. These are messages left for you, usually from the web UI. A `task` asks for a change to that part of the page; a `remark` is context to respect, not act on; a `highlight` is the reader marking that phrase as worth remembering and usually has no text at all — it is never work, so never act on one and never remove one. Find them with kb_list_notes. To resolve a task, make the edit and delete that note's comment in the same kb_update_page call — never delete a note without addressing it, and never leave one you have acted on. Do not add or reword notes as a side effect of an unrelated edit; preserve the ones you were not asked about.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `spaceInstructions` token back to the write tool — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
   }
 );
 
@@ -224,9 +312,55 @@ server.registerTool(
     },
   },
   async ({ filter }) => {
+    const selectedFilter = filter ?? "live";
+    const instructed = await instructedSpaces(selectedFilter);
     return textResult({
       siteTitle: SITE_TITLE,
-      spaces: await content.spaces(filter ?? "live"),
+      spaces: (await content.spaces(selectedFilter)).map((space) => ({
+        ...space,
+        hasInstructions: instructed.includes(space.key),
+      })),
+      // Named rather than merely flagged, so the obligation is legible without
+      // re-reading the per-space objects.
+      spacesWithInstructions: instructed,
+      ...(instructed.length > 0 && {
+        note: "The listed spaces marked hasInstructions carry standing instructions that govern what you write there. Read them (kb_get_space_instructions, or any tool call scoped to the space) before writing into one.",
+      }),
+    });
+  }
+);
+
+server.registerTool(
+  "kb_get_space_instructions",
+  {
+    title: "Get Space Instructions",
+    description:
+      "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructions` token the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the Flux web UI; the tools cannot change them.",
+    inputSchema: {
+      space: z.string().min(1).describe("Space key — its top-level folder name, e.g. flux."),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  },
+  async ({ space }) => {
+    const spaceKey = content.spaceKeyOf(space);
+    // Membership doubles as the traversal guard, as it does on the web routes.
+    const known = (await content.spaces("all")).some((entry) => entry.key === spaceKey);
+    if (!known) return errorResult(`Unknown space: ${space}`);
+
+    const instructions = await loadSpaceInstructions(content, spaceKey);
+    if (!instructions) {
+      return textResult({
+        space: spaceKey,
+        hasInstructions: false,
+        note: "This space has no standing instructions, so writes into it need no spaceInstructions token.",
+      });
+    }
+    return textResult({
+      hasInstructions: true,
+      ...instructionsPayload(instructions, instructionTokens),
     });
   }
 );
@@ -236,7 +370,7 @@ server.registerTool(
   {
     title: "List KB Pages",
     description:
-      "Return the knowledge-base navigation tree. Top-level entries are spaces; pass `space` to list one space's pages.",
+      "Return the knowledge-base navigation tree. Top-level entries are spaces; pass `space` to list one space's pages. Each listed page reports `isFolder` (a pure container, not a content page) and its stable `id` for `[[id:<id>]]` linking.",
     inputSchema: {
       filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
       space: z
@@ -251,12 +385,14 @@ server.registerTool(
   },
   async ({ filter, space }) => {
     const selectedFilter = filter ?? "live";
-    return textResult({
+    const payload = {
       siteTitle: SITE_TITLE,
       filter: selectedFilter,
       space: space ?? null,
       pages: await listPages(selectedFilter, space),
-    });
+    };
+    if (space) return textResult(await withInstructions(content.spaceKeyOf(space), payload));
+    return textResult({ ...payload, spacesWithInstructions: await instructedSpaces(selectedFilter) });
   }
 );
 
@@ -265,7 +401,7 @@ server.registerTool(
   {
     title: "Get KB Page",
     description:
-      "Read a page by slug as parsed Markdown or raw source. The result includes the page's stable `id` — use it to link here with `[[id:<id>]]` so the link survives future moves.",
+      "Read a page by slug as parsed Markdown or raw source. The result includes the page's stable `id` — use it to link here with `[[id:<id>]]` so the link survives future moves — and, in `parsed` form, a `notes` array of the inline notes left on the page, already located for you.",
     inputSchema: {
       slug: z
         .string()
@@ -283,11 +419,13 @@ server.registerTool(
     if (format === "raw") {
       const page = await content.loadRaw(clean);
       if (!page) return errorResult(`Page not found: ${clean || "(home)"}`);
-      return textResult({
-        slug: page.slug,
-        path: kbRelPath(page.fsPath),
-        raw: page.raw,
-      });
+      return textResult(
+        await withInstructions(content.spaceKeyOf(page.slug), {
+          slug: page.slug,
+          path: kbRelPath(page.fsPath),
+          raw: page.raw,
+        })
+      );
     }
 
     let page: Awaited<ReturnType<Content["load"]>>;
@@ -302,29 +440,33 @@ server.registerTool(
     if (isFolderPage(page.data)) {
       const tree = await content.spaceTree(content.spaceKeyOf(page.slug));
       const node = flatten(tree).find((n) => n.slug === page.slug);
-      return textResult({
+      return textResult(
+        await withInstructions(content.spaceKeyOf(page.slug), {
+          slug: page.slug,
+          id: page.data.id,
+          title: page.data.title,
+          isFolder: true,
+          frontmatter: page.data,
+          path: kbRelPath(page.fsPath),
+          children: (node?.children ?? []).map(listedPage),
+        })
+      );
+    }
+
+    return textResult(
+      await withInstructions(content.spaceKeyOf(page.slug), {
         slug: page.slug,
         id: page.data.id,
         title: page.data.title,
-        isFolder: true,
+        isFolder: false,
         frontmatter: page.data,
         path: kbRelPath(page.fsPath),
-        children: (node?.children ?? []).map(listedPage),
-      });
-    }
-
-    return textResult({
-      slug: page.slug,
-      id: page.data.id,
-      title: page.data.title,
-      isFolder: false,
-      frontmatter: page.data,
-      path: kbRelPath(page.fsPath),
-      body: page.body,
-      // Also parsed out, because `body` shows where each note sits but reading
-      // the position out of raw comment syntax is needless work.
-      notes: parseNotes(page.body),
-    });
+        body: page.body,
+        // Also parsed out, because `body` shows where each note sits but reading
+        // the position out of raw comment syntax is needless work.
+        notes: parseNotes(page.body),
+      })
+    );
   }
 );
 
@@ -333,7 +475,7 @@ server.registerTool(
   {
     title: "List KB Notes",
     description:
-      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history.",
+      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history. A note is written into the Markdown as `<!-- flux:note id=... kind=task|remark|highlight ... -->`, anchored directly above the block it refers to. Never delete a note without addressing it, and never leave one you have acted on.",
     inputSchema: {
       slug: z.string().optional().describe("Limit to a single page, by slug."),
       space: z
@@ -362,14 +504,18 @@ server.registerTool(
     const selectedFilter = filter ?? "live";
     const selectedLimit = limit ?? 50;
     const found = await collectListedNotes(selectedFilter, { space, slug, kind });
-    return textResult({
+    const payload = {
       filter: selectedFilter,
       space: space ?? null,
       slug: slug ?? null,
       kind: kind ?? null,
       total: found.length,
       notes: found.slice(0, selectedLimit),
-    });
+    };
+    // A slug pins the space more precisely than the `space` argument does.
+    const scope = slug !== undefined ? slug : space;
+    if (scope) return textResult(await withInstructions(content.spaceKeyOf(scope), payload));
+    return textResult({ ...payload, spacesWithInstructions: await instructedSpaces(selectedFilter) });
   }
 );
 
@@ -377,7 +523,8 @@ server.registerTool(
   "kb_search",
   {
     title: "Search KB",
-    description: "Search page titles, slugs, tags, summaries, and Markdown body text.",
+    description:
+      "Search page titles, slugs, tags, summaries, and Markdown body text. Folders are pure containers with no body and are excluded from the results. Each match reports the page's stable `id` for `[[id:<id>]]` linking.",
     inputSchema: {
       query: z.string().min(1).describe("Search query."),
       filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
@@ -395,13 +542,15 @@ server.registerTool(
   async ({ query, filter, limit, space }) => {
     const selectedFilter = filter ?? "live";
     const selectedLimit = limit ?? 10;
-    return textResult({
+    const payload = {
       query,
       filter: selectedFilter,
       limit: selectedLimit,
       space: space ?? null,
       matches: await searchMatches(query, selectedFilter, selectedLimit, space),
-    });
+    };
+    if (space) return textResult(await withInstructions(content.spaceKeyOf(space), payload));
+    return textResult({ ...payload, spacesWithInstructions: await instructedSpaces(selectedFilter) });
   }
 );
 
@@ -423,13 +572,21 @@ server.registerTool(
       body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
       tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
       summary: z.string().optional().describe("Optional frontmatter summary."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ parent, title, body, tags, summary }) => {
+  async ({ parent, title, body, tags, summary, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(parent ?? "");
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(parent ?? "");
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.createPage(parent ?? "", title, body ?? "", { tags, summary });
       const message = `Create ${git.kbRelPath(mutation.fsPath)} via mcp`;
@@ -442,6 +599,7 @@ server.registerTool(
         id: mutation.id,
         path: git.kbRelPath(mutation.fsPath),
         commit,
+        ...(await writeToken(spaceKey)),
       });
     } catch (err) {
       return errorResult(errorMessage(err));
@@ -460,13 +618,21 @@ server.registerTool(
         .string()
         .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. Required; folders cannot be created at the root."),
       title: z.string().min(1).describe("Folder display name; also slugified into the (stable) folder URL."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ parent, title }) => {
+  async ({ parent, title, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(parent ?? "");
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(parent ?? "");
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.createFolder(parent ?? "", title);
       const message = `Create ${git.kbRelPath(mutation.fsPath)} via mcp`;
@@ -479,6 +645,7 @@ server.registerTool(
         id: mutation.id,
         path: git.kbRelPath(mutation.fsPath),
         commit,
+        ...(await writeToken(spaceKey)),
       });
     } catch (err) {
       return errorResult(errorMessage(err));
@@ -495,20 +662,34 @@ server.registerTool(
     inputSchema: {
       slug: z.string().min(1).describe("Folder slug, e.g. flux/runbooks."),
       name: z.string().min(1).describe("New display name for the folder."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, name }) => {
+  async ({ slug, name, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.renameFolder(slug, name);
       if (!mutation) return errorResult(`Folder not found: ${cleanSlug(slug)}`);
       const commit = mutation.changedFsPaths.length
         ? await git.commitFiles(mutation.changedFsPaths, `Rename folder ${mutation.slug} via mcp`)
         : null;
-      return textResult({ renamed: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+      return textResult({
+        renamed: true,
+        slug: mutation.slug,
+        path: git.kbRelPath(mutation.fsPath),
+        commit,
+        ...(await writeToken(spaceKey)),
+      });
     } catch (err) {
       return errorResult(errorMessage(err));
     }
@@ -520,17 +701,25 @@ server.registerTool(
   {
     title: "Update KB Page",
     description:
-      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required). Read the current source first with kb_get_page (format: raw). Folders have no body and are rejected — use kb_rename_folder to rename one.",
+      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required), and it must keep the page's existing `id` — that id is what `[[id:<id>]]` links resolve through, so read the current source first with kb_get_page (format: raw) rather than composing frontmatter from scratch. Do not add or reword inline notes as a side effect of an unrelated edit; preserve the ones you were not asked about. Folders have no body and are rejected — use kb_rename_folder to rename one.",
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, markdown }) => {
+  async ({ slug, markdown, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.updateRaw(slug, markdown);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
@@ -538,7 +727,16 @@ server.registerTool(
         [mutation.fsPath],
         `Update ${git.kbRelPath(mutation.fsPath)} via mcp`
       );
-      return textResult({ updated: true, slug: mutation.slug, path: git.kbRelPath(mutation.fsPath), commit });
+      return textResult({
+        updated: true,
+        slug: mutation.slug,
+        path: git.kbRelPath(mutation.fsPath),
+        commit,
+        // Flagged when the submitted frontmatter dropped or altered the page's
+        // stable id and the on-disk one was restored — read before you rewrite.
+        ...(mutation.idPreserved && { idPreserved: true }),
+        ...(await writeToken(spaceKey)),
+      });
     } catch (err) {
       return errorResult(errorMessage(err));
     }
@@ -553,13 +751,21 @@ server.registerTool(
       "Archive a page (or an entire section subtree). Archiving sets frontmatter flags rather than deleting; it is reversible with kb_restore_page.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to archive."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug }) => {
+  async ({ slug, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.updateArchive(slug, true);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
@@ -573,6 +779,7 @@ server.registerTool(
         isSection: mutation.isSection,
         changed: mutation.changedFsPaths.map(git.kbRelPath),
         commit,
+        ...(await writeToken(spaceKey)),
       });
     } catch (err) {
       return errorResult(errorMessage(err));
@@ -587,13 +794,21 @@ server.registerTool(
     description: "Restore a previously archived page (or section subtree), clearing its archived frontmatter flags.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to restore."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug }) => {
+  async ({ slug, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.updateArchive(slug, false);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
@@ -607,6 +822,7 @@ server.registerTool(
         isSection: mutation.isSection,
         changed: mutation.changedFsPaths.map(git.kbRelPath),
         commit,
+        ...(await writeToken(spaceKey)),
       });
     } catch (err) {
       return errorResult(errorMessage(err));
@@ -626,13 +842,23 @@ server.registerTool(
         .string()
         .optional()
         .describe("Destination parent slug. Omit or use an empty string to move to the root."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ sourceSlug, targetParent }) => {
+  async ({ sourceSlug, targetParent, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(sourceSlug);
+    if (refused) return refused;
+    const refusedTarget = refuseInstructionsPath(targetParent ?? "");
+    if (refusedTarget) return refusedTarget;
+
+    const spaceKey = content.spaceKeyOf(sourceSlug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.movePage(sourceSlug, targetParent || null);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(sourceSlug)}`);
@@ -640,7 +866,13 @@ server.registerTool(
         mutation.changedFsPaths,
         `Move ${mutation.oldSlug} to ${mutation.newSlug} via mcp`
       );
-      return textResult({ moved: true, oldSlug: mutation.oldSlug, newSlug: mutation.newSlug, commit });
+      return textResult({
+        moved: true,
+        oldSlug: mutation.oldSlug,
+        newSlug: mutation.newSlug,
+        commit,
+        ...(await writeToken(spaceKey)),
+      });
     } catch (err) {
       return errorResult(errorMessage(err));
     }
@@ -656,13 +888,21 @@ server.registerTool(
     inputSchema: {
       slug: z.string().min(1).describe("Current page or section slug."),
       newName: z.string().min(1).describe("New last path segment; slugified to be URL-safe."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, newName }) => {
+  async ({ slug, newName, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.renamePage(slug, newName);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
@@ -673,7 +913,13 @@ server.registerTool(
         mutation.changedFsPaths,
         `Rename ${mutation.oldSlug} to ${mutation.newSlug} via mcp`
       );
-      return textResult({ renamed: true, oldSlug: mutation.oldSlug, newSlug: mutation.newSlug, commit });
+      return textResult({
+        renamed: true,
+        oldSlug: mutation.oldSlug,
+        newSlug: mutation.newSlug,
+        commit,
+        ...(await writeToken(spaceKey)),
+      });
     } catch (err) {
       return errorResult(errorMessage(err));
     }
@@ -688,6 +934,7 @@ server.registerTool(
       "Permanently delete a page, or an entire section subtree, from the knowledge base. This cannot be undone except via Git history; prefer kb_archive_page when in doubt.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to delete."),
+      spaceInstructions: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
@@ -695,7 +942,14 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ slug }) => {
+  async ({ slug, spaceInstructions }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructions);
+    if (gate) return gate;
+
     try {
       const mutation = await content.deletePage(slug);
       if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug)}`);
@@ -709,6 +963,7 @@ server.registerTool(
         isSection: mutation.isSection,
         deletedPaths: mutation.deletedFsPaths.map(git.kbRelPath),
         commit,
+        ...(await writeToken(spaceKey)),
       });
     } catch (err) {
       return errorResult(errorMessage(err));

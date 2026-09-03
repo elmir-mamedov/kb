@@ -7,7 +7,19 @@ import { SCHEMA_VERSION } from "./event-schema.js";
 import type { Task } from "./segmenter.js";
 import type { NormalizedTurn, Session } from "./transcript-types.js";
 
-const FLUX_TOOL_PREFIX = "mcp__flux-kb__";
+/**
+ * Flux's MCP tools reach a transcript under more than one prefix: `flux-kb`
+ * registered directly, and `plugin_flux_flux-kb` when the same server arrives
+ * through the Claude Code plugin. Matching only the bare form silently dropped
+ * every plugin-routed call from the harvest, which then understated tool usage
+ * in exactly the data used to justify tooling changes.
+ */
+const FLUX_TOOL_PATTERN = /^mcp__(?:plugin_[A-Za-z0-9_]+_)?flux-kb__/;
+
+function isFluxTool(name: string): boolean {
+  return FLUX_TOOL_PATTERN.test(name);
+}
+
 const ASK_USER_TOOL = "AskUserQuestion";
 const RESULT_SUMMARY_MAX = 240;
 
@@ -78,13 +90,13 @@ function taskEvent(session: Session, task: Task, opts: SignalOptions): HarvestEv
   };
 }
 
-/** Distinct KB spaces the task's `mcp__flux-kb__*` actions touched, first-seen order. */
+/** Distinct KB spaces the task's flux-kb actions touched, first-seen order. */
 function taskSpaces(session: Session, task: Task): string[] {
   const spaces: string[] = [];
   for (const turn of [...task.turns, ...task.sidechainTurns]) {
     if (turn.role !== "assistant") continue;
     for (const toolUse of turn.toolUses) {
-      if (!toolUse.name.startsWith(FLUX_TOOL_PREFIX)) continue;
+      if (!isFluxTool(toolUse.name)) continue;
       const result = session.resultByToolUseId.get(toolUse.id);
       const space = deriveSpace(toolUse.input, result?.text);
       if (space && !spaces.includes(space)) spaces.push(space);
@@ -196,7 +208,7 @@ function fluxToolCallEvents(
   for (const turn of turns) {
     if (turn.role !== "assistant") continue;
     for (const toolUse of turn.toolUses) {
-      if (!toolUse.name.startsWith(FLUX_TOOL_PREFIX)) continue;
+      if (!isFluxTool(toolUse.name)) continue;
       const result = session.resultByToolUseId.get(toolUse.id);
       events.push({
         ...turnBase(task.sessionId, task.taskId, turn),

@@ -60,6 +60,12 @@ export interface RawPage {
   slug: string;
   raw: string;
   fsPath: string;
+  /**
+   * Set by `updateRaw` when the incoming source omitted or changed the page's
+   * `id` and the on-disk one was restored. Surfaced so the slip is visible to
+   * the caller rather than silently repaired.
+   */
+  idPreserved?: boolean;
 }
 
 export interface ArchiveMutation {
@@ -390,19 +396,56 @@ export class Content {
       throw new Error("Folders have no editable body. Rename or move it instead.");
     }
 
-    parsePage(raw, fsPath);
+    const incoming = parsePage(raw, fsPath);
 
     // Browsers submit <textarea> content with CRLF newlines, so normalise to LF
     // (the repo convention) before comparing and writing. A save that changes
     // nothing must stay a true no-op: no rewrite, no spurious "updated" commit.
-    const next = normalizeEol(raw);
+    let next = normalizeEol(raw);
     const existing = await fs.readFile(fsPath, "utf8");
+
+    // The id is the page's identity — every `[[id:…]]` link resolves through it,
+    // and unlike the slug it is meant never to change. But the schema keeps it
+    // optional (pages predating the backfill must still validate), so a caller
+    // that replaces the whole source without reading it first writes perfectly
+    // valid Markdown while silently orphaning every link pointing here. Restore
+    // the on-disk id instead of rejecting, so no authored work is lost, and flag
+    // it so the slip stays visible.
+    //
+    // Re-serializing has to keep the on-disk key order, or restoring the id would
+    // reorder the frontmatter and turn a no-change save into a real diff and a
+    // spurious commit. So the on-disk frontmatter is the ordering template: its
+    // keys first (values from the incoming source, since a key the caller
+    // genuinely dropped should stay dropped), then any keys the caller added.
+    const onDiskId = current?.data.id;
+    let idPreserved = false;
+    if (onDiskId && incoming.data.id !== onDiskId) {
+      const file = matter(next);
+      const incomingData = file.data as Record<string, unknown>;
+      const template = matter(existing).data as Record<string, unknown>;
+
+      const merged: Record<string, unknown> = {};
+      for (const key of Object.keys(template)) {
+        if (key === "id") merged.id = onDiskId;
+        else if (key in incomingData) merged[key] = incomingData[key];
+      }
+      if (!("id" in merged)) merged.id = onDiskId;
+      for (const [key, value] of Object.entries(incomingData)) {
+        if (!(key in merged)) merged[key] = value;
+      }
+
+      next = normalizeEol(matter.stringify(file.content, merged));
+      idPreserved = true;
+    }
+
     if (normalizeEol(existing) === next) {
-      return { slug: cleanSlug(slug), raw: existing, fsPath };
+      // Still report a restored id: stripping it and changing nothing else lands
+      // here, and that slip should be visible even though there is nothing to write.
+      return { slug: cleanSlug(slug), raw: existing, fsPath, idPreserved };
     }
 
     await fs.writeFile(fsPath, next, "utf8");
-    return { slug: cleanSlug(slug), raw: next, fsPath };
+    return { slug: cleanSlug(slug), raw: next, fsPath, idPreserved };
   }
 
   /** Create a root-level draft page with a unique slug. */
@@ -769,6 +812,15 @@ export class Content {
     const cleanTarget = targetParentSlug === null ? "" : cleanSlug(targetParentSlug);
     if (!cleanTarget) {
       throw new Error("Pages must live inside a space.");
+    }
+    // Each space is its own git repo, so a cross-space move would carry a page
+    // out of the history that owns it and into another — losing its past in the
+    // source repo and inventing it in the target. Both front-ends inherit this
+    // guard by going through here.
+    if (this.spaceKeyOf(cleanSource) !== this.spaceKeyOf(cleanTarget)) {
+      throw new Error(
+        "Pages cannot move between spaces — each space is its own git repo. Create the page in the target space instead."
+      );
     }
     if (cleanTarget === cleanSource || cleanTarget.startsWith(`${cleanSource}/`)) {
       throw new Error("A page cannot be moved into itself or one of its children.");

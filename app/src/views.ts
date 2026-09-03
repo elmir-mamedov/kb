@@ -174,6 +174,12 @@ export interface EditView {
   error?: string;
   notice?: string;
   username?: string | null;
+  /**
+   * Set when this is a space's instructions file. Swaps the slug-rename field
+   * (renaming it would break the mechanism that finds it) for a character
+   * counter, since the text is re-sent to the LLM on space-scoped tool results.
+   */
+  instructions?: { cap: number; spaceTitle: string };
 }
 
 export interface DiffView {
@@ -402,10 +408,22 @@ function dashboardLink(spaceKey: string): string {
   </a>`;
 }
 
+/**
+ * Link to the current space's standing instructions for the LLM. Same gate as
+ * the dashboard: only meaningful inside a space.
+ */
+function instructionsLink(spaceKey: string): string {
+  if (!spaceKey) return "";
+  return `<a class="instructions-button" href="/_instructions?space=${encodeURIComponent(spaceKey)}" aria-label="Space instructions" title="Space instructions — standing orders for the LLM in this space">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 10h16M4 15h10M4 20h7" /></svg>
+  </a>`;
+}
+
 /** Dashboard + theme toggle + Help + username + Log out pinned to the top-right corner. */
 function sessionCorner(username?: string | null, spaceKey = ""): string {
   if (!username) return "";
   return `<div class="session-corner">
+    ${instructionsLink(spaceKey)}
     ${dashboardLink(spaceKey)}
     ${themeToggle()}
     <button type="button" class="button secondary" data-help-open>Help</button>
@@ -833,13 +851,23 @@ export function editLayout(v: EditView): string {
   const segments = v.activeSlug.split("/");
   const leaf = segments[segments.length - 1] ?? "";
   const parentPrefix = segments.slice(0, -1).join("/");
-  const slugField = v.activeSlug
+  const slugField = v.instructions
+    ? ""
+    : v.activeSlug
     ? `<label class="editor-label" for="slug">URL slug</label>
     <div class="slug-row">
       <span class="slug-prefix">/${parentPrefix ? `${escapeHtml(parentPrefix)}/` : ""}</span>
       <input id="slug" name="slug" type="text" value="${escapeHtml(leaf)}" spellcheck="false" autocapitalize="off" />
     </div>
     <p class="slug-hint">Changes the page URL. Re-parent with drag-and-drop / Move instead.</p>`
+    : "";
+
+  const instructionsHint = v.instructions
+    ? `<div class="instructions-hint">
+      <p>Standing orders for the LLM working in <strong>${escapeHtml(v.instructions.spaceTitle)}</strong> — language, tone, formatting, and any context it should always have. They reach the LLM on its next knowledge-base call; no restart needed.</p>
+      <p class="instructions-meta">This page is hidden from the sidebar and from search, and the LLM cannot edit it. Keep it under <span data-instructions-cap>${v.instructions.cap}</span> characters — it is re-sent on every call that touches this space, so put reference material on an ordinary page and link to it.</p>
+      <p class="instructions-count" data-instructions-count aria-live="polite"></p>
+    </div>`
     : "";
 
   return `<!doctype html>
@@ -860,6 +888,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
     </div>
   </header>
   ${error}${notice}
+  ${instructionsHint}
   <form class="editor" method="post" action="/_edit${pagePath}">
     ${slugField}
     <label class="editor-label" for="markdown">Markdown</label>
@@ -871,6 +900,7 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug)}
   </form>
 </main>
 <script>${EDITOR_SCRIPT}</script>
+${v.instructions ? `<script>${INSTRUCTIONS_COUNT_SCRIPT}</script>` : ""}
 <script>${MOVE_SCRIPT}</script>
 <script>${COPY_LINK_SCRIPT}</script>
 </body>
@@ -1375,6 +1405,43 @@ const EDITOR_SCRIPT = `
     if (typeof form.requestSubmit === "function") form.requestSubmit();
     else form.submit();
   });
+})();
+`;
+
+/**
+ * Live character count for the space-instructions editor.
+ *
+ * Counts the body only — the frontmatter is plumbing, and it is the body that is
+ * delivered to the LLM and measured against the cap. Warns rather than blocks:
+ * a hard stop mid-thought is worse than a clear number.
+ */
+const INSTRUCTIONS_COUNT_SCRIPT = `
+(() => {
+  const area = document.getElementById("markdown");
+  const out = document.querySelector("[data-instructions-count]");
+  const capEl = document.querySelector("[data-instructions-cap]");
+  if (!area || !out || !capEl) return;
+  const cap = parseInt(capEl.textContent, 10) || 2000;
+
+  // Every escape below is doubled because this is a template literal: a
+  // single-backslash escape collapses into a real newline on emit and breaks
+  // both the regex and the surrounding script. Same trap as NOTES_SCRIPT.
+  const bodyOf = (raw) => {
+    const match = /^---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n?/.exec(raw);
+    return (match ? raw.slice(match[0].length) : raw).trim();
+  };
+
+  const render = () => {
+    const chars = bodyOf(area.value).length;
+    const over = chars > cap;
+    out.textContent = over
+      ? chars + " characters — " + (chars - cap) + " over the " + cap + " limit. The extra will be cut when it reaches the LLM."
+      : chars + " of " + cap + " characters.";
+    out.classList.toggle("over", over);
+  };
+
+  area.addEventListener("input", render);
+  render();
 })();
 `;
 
@@ -2817,11 +2884,12 @@ const STYLES = `
   /* …a task is purple, because it asks for a change and should read as one… */
   --task-bg:#f3e8ff; --task-bg-strong:#e9d5ff; --task-fg:#6b21a8;
   --task-pin:#a855f7; --task-border:#d8b4fe;
-  /* …and a highlight is yellow, the colour a hand reaches for a pen for. It sits
-     close to the amber of a search hit on purpose: both mean "look here", and a
-     search mark only ever appears in the sidebar, never in the prose. */
-  --highlight-bg:#fef08a; --highlight-bg-strong:#fde047; --highlight-fg:#713f12;
-  --highlight-pin:#eab308; --highlight-border:#facc15;
+  /* …and a highlight is the flat yellow of a highlighter pen, undiluted, because
+     a washed-out yellow reads as stained paper rather than as a mark someone
+     made. The ink is a dark olive of the same hue, not the brown of the amber
+     search mark: the two now say "look here" in visibly different voices. */
+  --highlight-bg:#fbff00; --highlight-bg-strong:#e9ed00; --highlight-fg:#3d4000;
+  --highlight-pin:#9aa300; --highlight-border:#d8dd00;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -2851,8 +2919,8 @@ const STYLES = `
   --note-pin:#2dd4bf; --note-border:#0f766e;
   --task-bg:#4c1d95; --task-bg-strong:#5b21b6; --task-fg:#e9d5ff;
   --task-pin:#a855f7; --task-border:#6d28d9;
-  --highlight-bg:#5c4708; --highlight-bg-strong:#7a5f0a; --highlight-fg:#f5d67b;
-  --highlight-pin:#eab308; --highlight-border:#8a6d0b;
+  --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
+  --highlight-pin:#e2e800; --highlight-border:#6f7400;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -2884,8 +2952,8 @@ const STYLES = `
     --note-pin:#2dd4bf; --note-border:#0f766e;
     --task-bg:#4c1d95; --task-bg-strong:#5b21b6; --task-fg:#e9d5ff;
     --task-pin:#a855f7; --task-border:#6d28d9;
-    --highlight-bg:#5c4708; --highlight-bg-strong:#7a5f0a; --highlight-fg:#f5d67b;
-    --highlight-pin:#eab308; --highlight-border:#8a6d0b;
+    --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
+    --highlight-pin:#e2e800; --highlight-border:#6f7400;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -3126,13 +3194,13 @@ body.dragging-page .space-current{
   display:flex; align-items:center; gap:8px}
 /* The corner's two icon buttons share one box; only the theme toggle swaps its
    glyph, so the rules below it stay on that class alone. */
-.theme-toggle,.dash-button{
+.theme-toggle,.dash-button,.instructions-button{
   display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
   width:34px; height:34px; padding:0; border:1px solid var(--line); border-radius:6px;
   background:var(--surface); color:var(--fg-secondary); cursor:pointer;
 }
-.theme-toggle:hover,.dash-button:hover{background:var(--surface-hover-2); color:var(--fg)}
-.dash-button svg{display:block}
+.theme-toggle:hover,.dash-button:hover,.instructions-button:hover{background:var(--surface-hover-2); color:var(--fg)}
+.dash-button svg,.instructions-button svg{display:block}
 .theme-toggle .theme-icon{display:block}
 .theme-toggle .icon-moon{display:none}
 :root[data-theme="dark"] .theme-toggle .icon-sun{display:none}
@@ -3534,4 +3602,19 @@ body.dragging-page .space-current{
   /* Less left padding to hang the pin in, so it tucks in closer. */
   .note-pin{left:-17px; width:11px; height:11px}
 }
+
+/* --- space instructions editor -------------------------------------------- */
+.instructions-hint{
+  margin:0 0 18px; padding:14px 16px;
+  border:1px solid var(--line); border-radius:10px;
+  background:var(--surface); max-width:70ch;
+}
+.instructions-hint p{margin:0 0 8px; font-size:0.9rem; line-height:1.5}
+.instructions-hint p:last-child{margin-bottom:0}
+.instructions-meta{color:var(--muted)}
+.instructions-count{
+  font-variant-numeric:tabular-nums; color:var(--muted);
+  font-size:0.85rem !important;
+}
+.instructions-count.over{color:var(--error-fg); font-weight:600}
 `;
