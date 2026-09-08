@@ -242,6 +242,16 @@ test("tokens: a wrong or missing token fails", () => {
   assert.equal(tokens.verify("de", "Answer in German.", `  ${good} `), true);
 });
 
+test("tokens: passing the instruction text instead of the token fails", () => {
+  // Observed in the wild: a model that had just read the instructions passed the
+  // whole instruction text where the token belonged, because the read-result
+  // block and the write parameter shared the name `spaceInstructions`. The
+  // parameter is now `spaceInstructionsToken`; this pins the rejection.
+  const tokens = makeInstructionsTokens("nonce-a");
+  const instr = instructions();
+  assert.equal(tokens.verify("de", instr.text, instr.text), false);
+});
+
 test("tokens: a token is scoped to one space", () => {
   const tokens = makeInstructionsTokens("nonce-a");
   const de = tokens.tokenFor("de", "Answer in German.");
@@ -308,7 +318,7 @@ test("missing-token message hands back the text and a working token", () => {
 
   assert.match(message, /has standing instructions/);
   assert.match(message, /Write in plain English/);
-  const token = message.match(/spaceInstructions: (\S+)/)?.[1];
+  const token = message.match(/spaceInstructionsToken: (\S+)/)?.[1];
   assert.equal(tokens.verify("de", instr.text, token), true);
 });
 

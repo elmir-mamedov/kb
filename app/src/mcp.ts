@@ -216,12 +216,12 @@ const filterSchema = z.enum(["live", "archived", "all"]);
  */
 const instructionTokens = makeInstructionsTokens();
 
-/** The `spaceInstructions` param shared by every space-scoped write tool. */
+/** The `spaceInstructionsToken` param shared by every space-scoped write tool. */
 const instructionTokenSchema = z
   .string()
   .optional()
   .describe(
-    "The `spaceInstructions.token` from a tool result scoped to this space (or from kb_get_space_instructions). Required when the space has standing instructions; omit it for spaces that have none. If this call is refused, the current instructions and a fresh token come back with the refusal — follow them and retry once."
+    "The `spaceInstructions.token` value from a tool result scoped to this space (or from kb_get_space_instructions) — a short opaque string. Pass that token only, never the instruction text itself. Required when the space has standing instructions; omit it for spaces that have none. If this call is refused, the current instructions and a fresh token come back with the refusal — follow them and retry once."
   );
 
 /**
@@ -269,10 +269,10 @@ async function gateWrite(spaceKey: string, provided: string | undefined) {
  * A fresh token for a successful write's result, so a create → update chain
  * needs only the one read that opened it.
  */
-async function writeToken(spaceKey: string): Promise<{ spaceInstructions?: string }> {
+async function writeToken(spaceKey: string): Promise<{ spaceInstructionsToken?: string }> {
   const instructions = await loadSpaceInstructions(content, spaceKey);
   if (!instructions) return {};
-  return { spaceInstructions: instructionTokens.tokenFor(spaceKey, instructions.text) };
+  return { spaceInstructionsToken: instructionTokens.tokenFor(spaceKey, instructions.text) };
 }
 
 /**
@@ -294,7 +294,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `spaceInstructions` token back to the write tool — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `token` back as the write tool's `spaceInstructionsToken` — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
   }
 );
 
@@ -335,7 +335,7 @@ server.registerTool(
   {
     title: "Get Space Instructions",
     description:
-      "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructions` token the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the Flux web UI; the tools cannot change them.",
+      "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructionsToken` value the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the Flux web UI; the tools cannot change them.",
     inputSchema: {
       space: z.string().min(1).describe("Space key — its top-level folder name, e.g. flux."),
     },
@@ -355,7 +355,7 @@ server.registerTool(
       return textResult({
         space: spaceKey,
         hasInstructions: false,
-        note: "This space has no standing instructions, so writes into it need no spaceInstructions token.",
+        note: "This space has no standing instructions, so writes into it need no spaceInstructionsToken.",
       });
     }
     return textResult({
@@ -572,19 +572,19 @@ server.registerTool(
       body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
       tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
       summary: z.string().optional().describe("Optional frontmatter summary."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ parent, title, body, tags, summary, spaceInstructions }) => {
+  async ({ parent, title, body, tags, summary, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(parent ?? "");
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(parent ?? "");
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -618,19 +618,19 @@ server.registerTool(
         .string()
         .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. Required; folders cannot be created at the root."),
       title: z.string().min(1).describe("Folder display name; also slugified into the (stable) folder URL."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ parent, title, spaceInstructions }) => {
+  async ({ parent, title, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(parent ?? "");
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(parent ?? "");
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -662,19 +662,19 @@ server.registerTool(
     inputSchema: {
       slug: z.string().min(1).describe("Folder slug, e.g. flux/runbooks."),
       name: z.string().min(1).describe("New display name for the folder."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, name, spaceInstructions }) => {
+  async ({ slug, name, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -705,19 +705,19 @@ server.registerTool(
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, markdown, spaceInstructions }) => {
+  async ({ slug, markdown, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -751,19 +751,19 @@ server.registerTool(
       "Archive a page (or an entire section subtree). Archiving sets frontmatter flags rather than deleting; it is reversible with kb_restore_page.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to archive."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, spaceInstructions }) => {
+  async ({ slug, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -794,19 +794,19 @@ server.registerTool(
     description: "Restore a previously archived page (or section subtree), clearing its archived frontmatter flags.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to restore."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, spaceInstructions }) => {
+  async ({ slug, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -842,21 +842,21 @@ server.registerTool(
         .string()
         .optional()
         .describe("Destination parent slug. Omit or use an empty string to move to the root."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ sourceSlug, targetParent, spaceInstructions }) => {
+  async ({ sourceSlug, targetParent, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(sourceSlug);
     if (refused) return refused;
     const refusedTarget = refuseInstructionsPath(targetParent ?? "");
     if (refusedTarget) return refusedTarget;
 
     const spaceKey = content.spaceKeyOf(sourceSlug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -888,19 +888,19 @@ server.registerTool(
     inputSchema: {
       slug: z.string().min(1).describe("Current page or section slug."),
       newName: z.string().min(1).describe("New last path segment; slugified to be URL-safe."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
   },
-  async ({ slug, newName, spaceInstructions }) => {
+  async ({ slug, newName, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {
@@ -934,7 +934,7 @@ server.registerTool(
       "Permanently delete a page, or an entire section subtree, from the knowledge base. This cannot be undone except via Git history; prefer kb_archive_page when in doubt.",
     inputSchema: {
       slug: z.string().min(1).describe("Page or section slug to delete."),
-      spaceInstructions: instructionTokenSchema,
+      spaceInstructionsToken: instructionTokenSchema,
     },
     annotations: {
       readOnlyHint: false,
@@ -942,12 +942,12 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ slug, spaceInstructions }) => {
+  async ({ slug, spaceInstructionsToken }) => {
     const refused = refuseInstructionsPath(slug);
     if (refused) return refused;
 
     const spaceKey = content.spaceKeyOf(slug);
-    const gate = await gateWrite(spaceKey, spaceInstructions);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
     if (gate) return gate;
 
     try {

@@ -281,17 +281,17 @@ export function missingTokenMessage(
 ): string {
   const token = tokens.tokenFor(instructions.spaceKey, instructions.text);
   const lead = stale
-    ? `The spaceInstructions token for "${instructions.spaceKey}" is out of date — these instructions changed since you read them.`
+    ? `The spaceInstructionsToken for "${instructions.spaceKey}" is out of date — these instructions changed since you read them.`
     : `Space "${instructions.spaceKey}" has standing instructions that govern what you write there, and you have not read them in this session.`;
   return [
     lead,
     "",
-    "Follow them, then repeat this call with spaceInstructions set to the token below.",
+    "Follow them, then repeat this call with spaceInstructionsToken set to the value below.",
     "",
     `--- instructions for ${instructions.spaceKey} ---`,
     instructions.text,
     "--- end instructions ---",
     "",
-    `spaceInstructions: ${token}`,
+    `spaceInstructionsToken: ${token}`,
   ].join("\n");
 }
