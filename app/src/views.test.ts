@@ -405,6 +405,59 @@ test("tree rows open with exactly one marker glyph, so carets and dots share a c
   }
 });
 
+test("the open page's row is marked as the current page", () => {
+  const html = layout(
+    pageView({
+      tree: [
+        node({
+          slug: "flux/handbook",
+          title: "Handbook",
+          isSection: true,
+          children: [node({ slug: "flux/notes", title: "Notes" })],
+        }),
+      ],
+      activeSlug: "flux/notes",
+    })
+  );
+
+  // The whole attribute run, in order: MOVE_SCRIPT and COPY_LINK_SCRIPT select
+  // `.tree a.active[data-drag-slug]`, so the class must keep its exact slot.
+  assert.match(
+    html,
+    /class="active" aria-current="page" draggable="true" data-drag-slug="flux\/notes"/
+  );
+  // One page is open, so exactly one row claims to be it.
+  assert.equal([...html.matchAll(/aria-current="page"/g)].length, 1);
+});
+
+test("a view with no open page marks no row as current", () => {
+  // The dashboard passes activeSlug: "", which must not match a real slug.
+  assert.doesNotMatch(dashboardLayout(dashboardView()), /aria-current/);
+});
+
+/**
+ * The reveal of the open page's chain is transient by construction: it skips
+ * the collapse instead of undoing it, and has no write path at all. Only the
+ * toggle's own click handler may reach localStorage — that is what makes an
+ * automatic expansion fall shut again on the next page while the reader's own
+ * clicks survive. None of this executes under `npm test`, so these assert on
+ * the emitted source; the runtime behaviour has to be driven in a browser.
+ */
+test("the collapse script reveals the open page without persisting it", () => {
+  const html = layout(pageView());
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const move = scripts.find((s) => s.includes("kb:collapsed"));
+  assert.ok(move, "the collapse script is emitted with the page");
+
+  // Ancestors of the open page — and the page's own node — keep their children.
+  assert.match(move, /!\(activeLi && li\.contains\(activeLi\)\)/);
+  // Storage is written from the click handler and nowhere else.
+  assert.equal([...move.matchAll(/saveCollapsed\(/g)].length, 2);
+  // The row is scrolled into view by moving the sidebar's own scroll box, so
+  // the window never travels with it.
+  assert.match(move, /pane\.scrollTop \+=/);
+});
+
 test("issue #2: every group gets an insertion line above each row and one closing it", () => {
   const html = layout(
     pageView({

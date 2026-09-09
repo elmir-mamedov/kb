@@ -40,14 +40,17 @@ function renderTree(
   const items = nodes
     .map((n) => {
       const isActive = n.slug === activeSlug;
-      const cls = isActive ? ' class="active"' : "";
+      // aria-current names the row a reader is on, which the highlight colour
+      // alone cannot. The class keeps its exact spelling and slot: MOVE_SCRIPT
+      // and COPY_LINK_SCRIPT both select `.tree a.active[data-drag-slug]`.
+      const activeAttrs = isActive ? ' class="active" aria-current="page"' : "";
       const dragAttrs = options.dragEnabled
         ? ` draggable="true" data-drag-slug="${escapeHtml(n.slug)}" data-drop-slug="${escapeHtml(n.slug)}"`
         : "";
       const label =
         options.archiveMode && !n.archived
           ? `<span class="tree-label">${escapeHtml(n.title)}</span>`
-          : `<a href="${slugPath(n.slug)}"${cls}${dragAttrs}>${escapeHtml(n.title)}</a>`;
+          : `<a href="${slugPath(n.slug)}"${activeAttrs}${dragAttrs}>${escapeHtml(n.title)}</a>`;
       const hasChildren = n.children.length > 0;
       // Every row opens with one 18px marker column holding exactly one glyph, so
       // an expandable row's caret lands on the same vertical as a sibling leaf's
@@ -1861,12 +1864,21 @@ const MOVE_SCRIPT = `
   }
 
   const collapsed = loadCollapsed();
+  // The open page's row must always be on screen, so a branch the reader
+  // collapsed earlier is skipped below rather than un-collapsed: the reveal
+  // lasts exactly this page load, never reaches localStorage, and navigating
+  // away leaves the branch the way the reader left it. contains() reports true
+  // for the node itself, so this covers the open page's own node too -- its
+  // direct children get listed -- while everything below it keeps the state it
+  // had.
+  const activeLink = document.querySelector(".tree a.active");
+  const activeLi = activeLink ? activeLink.closest("li[data-tree-slug]") : null;
   const treeItems = Array.from(document.querySelectorAll(".tree li[data-tree-slug]"));
   for (const li of treeItems) {
     const toggle = li.querySelector(":scope > .tree-row .tree-toggle");
     if (!toggle) continue;
     const slug = li.getAttribute("data-tree-slug") || "";
-    if (collapsed.has(slug)) {
+    if (collapsed.has(slug) && !(activeLi && li.contains(activeLi))) {
       li.classList.add("collapsed");
       toggle.setAttribute("aria-expanded", "false");
     }
@@ -1879,6 +1891,22 @@ const MOVE_SCRIPT = `
       else collapsed.delete(slug);
       saveCollapsed(collapsed);
     });
+  }
+
+  // Revealing a row is pointless if it sits outside the sidebar's scroll box.
+  // Measured after the loop, because collapsing the other branches is what
+  // decides where this row ended up. The overflow test skips trees that already
+  // fit and skips the narrow layout, where .sidebar is static and scrolling
+  // would move the window instead -- pulling the reader off the page they just
+  // opened. scrollTop, not scrollIntoView, for the same reason.
+  const pane = document.querySelector(".sidebar");
+  if (activeLink && pane && pane.scrollHeight > pane.clientHeight) {
+    const row = activeLink.closest(".tree-row") || activeLink;
+    const paneBox = pane.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    if (rowBox.top < paneBox.top || rowBox.bottom > paneBox.bottom) {
+      pane.scrollTop += rowBox.top - paneBox.top - (pane.clientHeight - rowBox.height) / 2;
+    }
   }
 })();
 `;
