@@ -11,6 +11,7 @@ import { makeGit } from "./git.js";
 import { collectNotes } from "./note-index.js";
 import { parseNotes, type Note, type NoteKind } from "./notes.js";
 import { searchPages } from "./search.js";
+import { extractSections } from "./markdown.js";
 import {
   instructionsPayload,
   isInstructionsSlug,
@@ -62,6 +63,12 @@ interface SearchMatch {
   tags: string[];
   summary?: string;
   excerpt: string;
+  /**
+   * The heading the match falls under, for linking straight to that part of the
+   * page. Absent when only the title/slug/tags matched, or when the match sits
+   * above the page's first heading.
+   */
+  section?: { anchor: string; text: string };
   score: number;
 }
 
@@ -173,6 +180,7 @@ async function searchMatches(
     tags: hit.tags,
     summary: hit.summary,
     excerpt: hit.excerpt,
+    section: hit.section,
     score: hit.score,
   }));
 }
@@ -294,7 +302,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `token` back as the write tool's `spaceInstructionsToken` — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `token` back as the write tool's `spaceInstructionsToken` — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves. To point at one section of a page rather than the whole thing, append its anchor: `[[id:<id>#<anchor>]]` or `[[space/some/slug#<anchor>]]`. Anchors come back in `kb_get_page`'s `sections` and on each `kb_search` match — read them, do not guess them from the heading text.",
   }
 );
 
@@ -401,7 +409,7 @@ server.registerTool(
   {
     title: "Get KB Page",
     description:
-      "Read a page by slug as parsed Markdown or raw source. The result includes the page's stable `id` — use it to link here with `[[id:<id>]]` so the link survives future moves — and, in `parsed` form, a `notes` array of the inline notes left on the page, already located for you.",
+      "Read a page by slug as parsed Markdown or raw source. The result includes the page's stable `id` — use it to link here with `[[id:<id>]]` so the link survives future moves — and, in `parsed` form, a `sections` array giving every heading with the `anchor` that links to it (`[[id:<id>#<anchor>]]`), plus a `notes` array of the inline notes left on the page, already located for you.",
     inputSchema: {
       slug: z
         .string()
@@ -462,6 +470,9 @@ server.registerTool(
         frontmatter: page.data,
         path: kbRelPath(page.fsPath),
         body: page.body,
+        // The headings with the anchors the rendered page actually gives them,
+        // so a link to one section does not depend on guessing the slug rule.
+        sections: extractSections(page.body),
         // Also parsed out, because `body` shows where each note sits but reading
         // the position out of raw comment syntax is needless work.
         notes: parseNotes(page.body),
@@ -524,7 +535,7 @@ server.registerTool(
   {
     title: "Search KB",
     description:
-      "Search page titles, slugs, tags, summaries, and Markdown body text. Folders are pure containers with no body and are excluded from the results. Each match reports the page's stable `id` for `[[id:<id>]]` linking.",
+      "Search page titles, slugs, tags, summaries, and Markdown body text. Folders are pure containers with no body and are excluded from the results. Each match reports the page's stable `id` for `[[id:<id>]]` linking, and — when the query hit the body under a heading — a `section` giving that heading's anchor, so you can link to the passage itself with `[[id:<id>#<anchor>]]`.",
     inputSchema: {
       query: z.string().min(1).describe("Search query."),
       filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),

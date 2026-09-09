@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Content } from "./content.js";
 import { excerptFor, normalizeText, scorePage, searchPages, searchTokens } from "./search.js";
+import { extractSections } from "./markdown.js";
 import { makeTempKb, type TempKb } from "./test-helpers.js";
 
 function page(fields: {
@@ -262,6 +263,58 @@ test("inline notes are not searchable and never leak into an excerpt", async () 
     assert.equal(hits.length, 1);
     assert.equal(hits[0].excerpt, "Watch the queue drain.");
     assert.doesNotMatch(hits[0].excerpt, /flux:note|-->/);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("a body hit reports the section it was found under", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = await seed(kb.dir);
+    await content.createPage(
+      "docs",
+      "Runbook",
+      "Intro line.\n\n## Rolling back\n\nturn the flag off\n\n## Retention\n\nkeep for 30 days\n"
+    );
+
+    const hits = await searchPages(content, "retention", { space: "docs" });
+    assert.equal(hits.length, 1);
+    assert.deepEqual(hits[0].section, { anchor: "retention", text: "Retention" });
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("the reported anchor is the one the renderer gives that heading", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = await seed(kb.dir);
+    const body = "## Retention\n\nfirst\n\n## Retention\n\nkeep the ledger for 30 days\n";
+    await content.createPage("docs", "Runbook", body);
+
+    const hits = await searchPages(content, "ledger", { space: "docs" });
+    // The match is under the *second* "Retention", so it must report the
+    // de-duplicated anchor rather than the bare one.
+    assert.equal(hits[0].section?.anchor, "retention-2");
+    assert.ok(extractSections(body).some((s) => s.anchor === "retention-2"));
+  } finally {
+    await kb.cleanup();
+  }
+});
+
+test("a match above the first heading, or on the title alone, reports no section", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = await seed(kb.dir);
+    await content.createPage("docs", "Preamble", "orphan text\n\n## Later\n\nmore\n");
+    await content.createPage("docs", "Widgets", "nothing relevant here\n");
+
+    const above = await searchPages(content, "orphan", { space: "docs" });
+    assert.equal(above[0].section, undefined);
+
+    const titleOnly = await searchPages(content, "widgets", { space: "docs" });
+    assert.equal(titleOnly[0].section, undefined);
   } finally {
     await kb.cleanup();
   }

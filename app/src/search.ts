@@ -16,6 +16,7 @@ import {
   type PageNode,
   type TreeFilter,
 } from "./content.js";
+import { extractSections, type Section } from "./markdown.js";
 import { stripNotes } from "./notes.js";
 
 export interface SearchHit {
@@ -30,6 +31,12 @@ export interface SearchHit {
   summary?: string;
   /** Plain-text snippet, windowed around the query where possible. */
   excerpt: string;
+  /**
+   * The section the match falls in, so a caller can link to that heading rather
+   * than to the top of the page. Absent when the query matched only the title,
+   * slug or tags, or when the match sits above the page's first heading.
+   */
+  section?: { anchor: string; text: string };
   score: number;
 }
 
@@ -134,6 +141,43 @@ export function excerptFor(query: string, body: string, summary?: string): strin
   return clamp(text, Math.max(0, index - EXCERPT_LEAD));
 }
 
+/**
+ * The heading a query's first body match sits under.
+ *
+ * Works in lines rather than characters on purpose: `excerptFor` above windows
+ * a whitespace-collapsed copy of the body, so the index it finds cannot be
+ * mapped back to a position in the source — but `extractSections` reports each
+ * heading's line, so scanning the body line by line lines the two up directly.
+ *
+ * Returns undefined when the term appears only above the first heading, which is
+ * the honest answer: there is no section to link to.
+ */
+export function sectionFor(
+  query: string,
+  body: string,
+  sections: Section[]
+): { anchor: string; text: string } | undefined {
+  if (!sections.length) return undefined;
+  const tokens = searchTokens(query);
+  if (!tokens.length) return undefined;
+
+  const lines = body.split("\n");
+  for (let line = 0; line < lines.length; line += 1) {
+    const haystack = normalizeText(lines[line]);
+    if (!tokens.some((token) => haystack.includes(token))) continue;
+
+    let found: Section | undefined;
+    for (const section of sections) {
+      if (section.line <= line) found = section;
+      else break;
+    }
+    // A hit on the heading line itself belongs to that heading, which the
+    // `<=` above already picks; a hit before any heading belongs to none.
+    return found ? { anchor: found.anchor, text: found.text } : undefined;
+  }
+  return undefined;
+}
+
 function clamp(text: string, start: number): string {
   if (!text) return "";
   const end = Math.min(text.length, start + EXCERPT_LENGTH);
@@ -182,7 +226,7 @@ export async function searchPages(
     }
   });
 
-  const hits: SearchHit[] = [];
+  const scored: { hit: SearchHit; body: string }[] = [];
   for (const page of pages) {
     if (!page) continue;
     // Folders are pure containers with no body to match — skip them.
@@ -197,20 +241,36 @@ export async function searchPages(
     const score = scorePage(query, searchable);
     if (score === 0) continue;
 
-    hits.push({
-      slug: page.slug,
-      id: page.data.id,
-      title: page.data.title,
-      fsPath: page.fsPath,
-      archived: page.data.archived === true,
-      tags: page.data.tags ?? [],
-      summary: page.data.summary,
-      excerpt: excerptFor(query, searchable.body, page.data.summary),
-      score,
+    scored.push({
+      hit: {
+        slug: page.slug,
+        id: page.data.id,
+        title: page.data.title,
+        fsPath: page.fsPath,
+        archived: page.data.archived === true,
+        tags: page.data.tags ?? [],
+        summary: page.data.summary,
+        excerpt: excerptFor(query, searchable.body, page.data.summary),
+        score,
+      },
+      body: searchable.body,
     });
   }
 
-  return hits
-    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
-    .slice(0, limit);
+  // Locating each hit's section costs a Markdown parse, so it happens after the
+  // cut rather than for every page that matched — the sidebar's type-ahead runs
+  // this on each keystroke and would otherwise parse the whole KB to throw all
+  // but ten of the results away.
+  return scored
+    .sort((a, b) => b.hit.score - a.hit.score || a.hit.title.localeCompare(b.hit.title))
+    .slice(0, limit)
+    .map(({ hit, body }) => ({
+      ...hit,
+      // Sections come from the same note-stripped body the match was found in,
+      // so the line numbers line up. The ids still match the rendered page: a
+      // heading inside a note comment is consumed by `flux_note` there too, so
+      // the sequence of real headings — and every id derived from it — is the
+      // same either way.
+      section: sectionFor(query, body, extractSections(body)),
+    }));
 }
