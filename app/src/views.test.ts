@@ -14,6 +14,7 @@ import {
 } from "./views.js";
 import type { PageNode } from "./content.js";
 import type { IndexedNote } from "./note-index.js";
+import type { Section } from "./markdown.js";
 
 /** A leaf-page tree node fixture (fills in the required flags). */
 function node(overrides: Partial<PageNode> & Pick<PageNode, "slug" | "title">): PageNode {
@@ -40,6 +41,17 @@ function pageView(overrides: Partial<PageView> = {}): PageView {
     username: "alice",
     ...overrides,
   };
+}
+
+/** The headings the rail is built from, in document order. */
+function sections(overrides: Section[] = []): Section[] {
+  return overrides.length
+    ? overrides
+    : [
+        { level: 2, text: "First", anchor: "first", line: 0 },
+        { level: 3, text: "Detail", anchor: "detail", line: 4 },
+        { level: 2, text: "Second", anchor: "second", line: 8 },
+      ];
 }
 
 /** A task note as the dashboard receives it, already paired with its page. */
@@ -971,6 +983,7 @@ test("space instructions: the hint states it is hidden and LLM-read-only", () =>
 test("views: every inline script in every layout parses as JavaScript", () => {
   const pages: Array<[string, string]> = [
     ["page", layout(pageView())],
+    ["page-toc", layout(pageView({ sections: sections() }))],
     ["folder", folderLayout({ ...pageView(), children: [] } as unknown as FolderView)],
     ["dashboard", dashboardLayout(dashboardView())],
     ["spaces", spacesLayout({ siteTitle: "KB", spaces: [], username: "u" } as SpacesView)],
@@ -996,4 +1009,79 @@ test("views: every inline script in every layout parses as JavaScript", () => {
       );
     }
   }
+});
+
+// --- section linking ---------------------------------------------------------
+
+test("the rail lists the sections it is given, indented by level", () => {
+  const html = layout(pageView({ sections: sections() }));
+  assert.match(html, /<aside class="toc" aria-label="On this page">/);
+  assert.match(html, /<div class="toc-head">On this page<\/div>/);
+  assert.match(html, /<li class="toc-item" data-depth="0"><a href="#first" data-section="first">First<\/a>/);
+  assert.match(html, /<li class="toc-item" data-depth="1"><a href="#detail" data-section="detail">Detail<\/a>/);
+  assert.match(html, /<li class="toc-item" data-depth="0"><a href="#second" data-section="second">Second<\/a>/);
+});
+
+test("the rail sits after the content, not inside it", () => {
+  const html = layout(pageView({ sections: sections() }));
+  assert.ok(html.indexOf("</main>") < html.indexOf('<aside class="toc"'));
+});
+
+test("a page with fewer than two sections gets no rail and no scroll script", () => {
+  for (const list of [[], sections([{ level: 2, text: "Only", anchor: "only", line: 0 }])]) {
+    const html = layout(pageView({ sections: list }));
+    assert.doesNotMatch(html, /class="toc"/);
+    assert.doesNotMatch(html, /data-section=/);
+  }
+});
+
+test("a rail entry escapes its heading text and percent-encodes its href", () => {
+  const html = layout(
+    pageView({
+      sections: sections([
+        { level: 2, text: "A & B <script>", anchor: "a-b", line: 0 },
+        { level: 2, text: "一句话", anchor: "一句话", line: 4 },
+      ]),
+    })
+  );
+  assert.match(html, /<a href="#a-b" data-section="a-b">A &amp; B &lt;script&gt;<\/a>/);
+  // The href has to be encoded to resolve; data-section stays raw because the
+  // script looks the heading up by id.
+  assert.match(html, /<a href="#%E4%B8%80%E5%8F%A5%E8%AF%9D" data-section="一句话">/);
+});
+
+test("the scroll spy looks headings up by id, never by selector", () => {
+  // 1249 headings in this KB start with a digit, and `#1-setup` is not a valid
+  // CSS selector — querySelector would throw rather than miss.
+  const html = layout(pageView({ sections: sections() }));
+  assert.match(html, /document\.getElementById\(/);
+  assert.doesNotMatch(html, /querySelector\("#"/);
+});
+
+test("headings get a scroll margin, and smooth scrolling stays off", () => {
+  const html = layout(pageView());
+  assert.match(html, /\.prose :is\(h1,h2,h3,h4,h5,h6\)\{scroll-margin-top:28px\}/);
+  // Smooth scrolling would make scrollIntoView async, and NOTES_SCRIPT places a
+  // popover against the rect the anchor lands at immediately afterwards.
+  assert.doesNotMatch(html, /scroll-behavior/);
+});
+
+test("the section glyph is drawn by CSS so it stays out of the heading text", () => {
+  assert.match(layout(pageView()), /\.section-link::before\{content:"#"\}/);
+});
+
+test("a real element id wins over the note-fragment handler", () => {
+  const html = layout(pageView({ notes: [] }));
+  assert.match(html, /if \(location\.hash\.length > 1 && document\.getElementById\(location\.hash\.slice\(1\)\)\) return;/);
+});
+
+test("the copy handler moves the address bar for a fragment control", () => {
+  const html = layout(pageView());
+  assert.match(html, /if \(href && href\.charAt\(0\) === "#"\) location\.hash = href\.slice\(1\);/);
+});
+
+test("Help documents section linking and the pin syntax", () => {
+  const html = layout(pageView());
+  assert.match(html, /Linking to a section/);
+  assert.match(html, /\{#my-anchor\}/);
 });

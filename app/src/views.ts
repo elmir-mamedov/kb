@@ -1,6 +1,7 @@
 import type { PageNode, SpaceInfo } from "./content.js";
 import type { DiffLine } from "./diff.js";
 import { relativeAge, type NotePageGroup, type NoteSummary } from "./note-index.js";
+import type { Section } from "./markdown.js";
 import type { Note } from "./notes.js";
 
 export function escapeHtml(s: string): string {
@@ -154,6 +155,11 @@ export interface PageView {
   title: string;
   tags?: string[];
   contentHtml: string;
+  /**
+   * The page's headings, for the "On this page" rail. Already filtered to the
+   * levels the rail shows — `tableOfContents` renders whatever it is given.
+   */
+  sections?: Section[];
   /** Inline notes saved on this page; the renderer has already anchored them. */
   notes?: Note[];
   updated?: string | null;
@@ -470,6 +476,38 @@ function copyLinkButton(slug: string): string {
   return `<button type="button" class="button secondary" data-copy-slug="${escapeHtml(slug)}" data-copy-link>Copy link</button>`;
 }
 
+/**
+ * The "On this page" rail: the page's headings, indented by level.
+ *
+ * Rendered as a third column beside the sidebar and the content rather than
+ * inside `.content`, so the prose keeps its full measure. A page with only one
+ * section gets no rail — a table of contents listing a single entry is noise.
+ *
+ * `data-depth` carries the indent instead of nested `<ul>`s because the scroll
+ * script walks the entries as one flat list, and `data-section` is the anchor it
+ * matches against. Deliberately no `white-space:nowrap` anywhere in here: `body`
+ * is a flex row, so nowrap raises this column's min-content width and widens the
+ * whole page instead of ellipsising.
+ */
+function tableOfContents(sections: Section[]): string {
+  if (sections.length < 2) return "";
+  const top = Math.min(...sections.map((s) => s.level));
+  const items = sections
+    .map((s) => {
+      const href = escapeHtml("#" + encodeURIComponent(s.anchor));
+      return (
+        `<li class="toc-item" data-depth="${s.level - top}">` +
+        `<a href="${href}" data-section="${escapeHtml(s.anchor)}">${escapeHtml(s.text)}</a>` +
+        `</li>`
+      );
+    })
+    .join("");
+  return `<aside class="toc" aria-label="On this page">
+  <div class="toc-head">On this page</div>
+  <ul class="toc-list">${items}</ul>
+</aside>`;
+}
+
 export function layout(v: PageView): string {
   const tags = (v.tags ?? [])
     .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
@@ -511,6 +549,7 @@ export function layout(v: PageView): string {
   const notice = v.notice
     ? `<div class="notice ${v.notice.tone}">${escapeHtml(v.notice.text)}</div>`
     : "";
+  const toc = tableOfContents(v.sections ?? []);
   // Shipped even when there are no notes yet, because it also carries the slug
   // the composer posts to — the reader can always start the first one.
   const notesData =
@@ -536,9 +575,11 @@ ${sidebarHtml(v.siteTitle, v.spaces, v.spaceKey, v.tree, v.activeSlug, v.isArchi
   ${notice}${archivedBanner}
   <article class="prose">${v.contentHtml}</article>
 </main>
+${toc}
 ${notesData}
 <script>${EDIT_SHORTCUT_SCRIPT}</script>
 <script>${COPY_LINK_SCRIPT}</script>
+${toc ? `<script>${TOC_SCRIPT}</script>` : ""}
 ${notesData ? `<script>${NOTES_SCRIPT}</script>` : ""}
 ${v.isArchiveView ? "" : `<script>${MOVE_SCRIPT}</script>`}
 ${v.contentHtml.includes('class="mermaid"') ? MERMAID_SCRIPT : ""}
@@ -1187,6 +1228,10 @@ const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
       <dd>Close the search results or this dialog</dd>
     </dl>
   </section>
+  <section class="help-section">
+    <h3>Linking to a section</h3>
+    <p>Every heading on a page is linkable. Hover one and click the <strong>#</strong> that appears after it to copy a reference to that section &mdash; <code>space/page#the-heading</code> &mdash; which you can paste into a page as <code>[[space/page#the-heading]]</code>. Long pages also get an <strong>On this page</strong> list on the right that follows you as you scroll. A heading's anchor comes from its text, so rewording it changes the link; to pin one that others rely on, write the anchor yourself as <code>## Heading {#my-anchor}</code>.</p>
+  </section>
 </dialog>`;
 
 const HELP_SCRIPT = `
@@ -1314,6 +1359,11 @@ const COPY_LINK_SCRIPT = `
     const slug = btn.getAttribute("data-copy-slug") || "";
     const label = btn.getAttribute("data-copy-label");
     copyText(slug).then((ok) => confirmCopy(btn, ok, label));
+    // A heading's copy control is also a real link to its own section. The
+    // click was prevented above so the copy could run, so move the address bar
+    // by hand — the reader who wanted the URL now sees it there too.
+    const href = btn.getAttribute("href");
+    if (href && href.charAt(0) === "#") location.hash = href.slice(1);
   });
   document.addEventListener("keydown", (event) => {
     if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return;
@@ -1331,6 +1381,113 @@ const COPY_LINK_SCRIPT = `
     // absent entirely; the toast is what makes it confirmable there.
     copyText(slug).then((ok) => confirmCopy(pageBtn || active, ok));
   });
+})();
+`;
+
+/**
+ * Highlights the section the reader is currently in, in the "On this page" rail.
+ *
+ * A scroll listener rather than an IntersectionObserver: the question is "which
+ * section am I in", and an observer answers "which headings are visible", which
+ * is the wrong answer for a section taller than the viewport (no heading in
+ * view, so nothing lights) and for the last section on a short page (it can
+ * never reach the top). Instead every heading's position is measured against a
+ * probe line just below the viewport top, and the last one at or above it wins.
+ *
+ * The window is what scrolls — only the sidebar has its own overflow — so
+ * `getBoundingClientRect().top` is measured fresh on each pass rather than
+ * cached, which keeps it correct after images load or a note popover opens.
+ * Reads are throttled to one per animation frame; scroll fires far more often
+ * than that and each pass touches every heading.
+ *
+ * An h3's parent h2 is lit too, so the section you are inside stays marked while
+ * you read its subsections.
+ */
+const TOC_SCRIPT = `
+(() => {
+  const toc = document.querySelector(".toc");
+  if (!toc) return;
+  const links = Array.prototype.slice.call(toc.querySelectorAll("[data-section]"));
+  if (!links.length) return;
+
+  // Pair each rail entry with its heading once; the DOM order of the rail is
+  // document order, which is what the "last one above the line" scan needs.
+  const entries = [];
+  for (const link of links) {
+    const id = link.getAttribute("data-section") || "";
+    let heading = null;
+    try {
+      heading = document.getElementById(id);
+    } catch (e) {
+      heading = null;
+    }
+    if (heading) entries.push({ link: link, heading: heading, item: link.parentElement });
+  }
+  if (!entries.length) return;
+
+  let current = null;
+  let queued = false;
+
+  function mark(entry) {
+    if (entry === current) return;
+    for (const other of entries) {
+      other.link.removeAttribute("aria-current");
+      if (other.item) {
+        other.item.removeAttribute("data-active");
+        other.item.removeAttribute("data-current");
+      }
+    }
+    current = entry;
+    if (!entry) return;
+    entry.link.setAttribute("aria-current", "location");
+    if (entry.item) {
+      entry.item.setAttribute("data-active", "true");
+      entry.item.setAttribute("data-current", "true");
+    }
+    // Also light the nearest shallower entry above it, so an h3 keeps its h2 lit.
+    const depth = entry.item ? Number(entry.item.getAttribute("data-depth") || "0") : 0;
+    if (depth > 0) {
+      const at = entries.indexOf(entry);
+      for (let i = at - 1; i >= 0; i--) {
+        const item = entries[i].item;
+        if (!item) continue;
+        if (Number(item.getAttribute("data-depth") || "0") < depth) {
+          item.setAttribute("data-active", "true");
+          break;
+        }
+      }
+    }
+  }
+
+  function update() {
+    queued = false;
+    // Matches the headings' scroll-margin-top, so the entry lights at the
+    // moment its heading settles where a #link would have put it.
+    const line = 28;
+    let found = null;
+    for (const entry of entries) {
+      if (entry.heading.getBoundingClientRect().top <= line) found = entry;
+      else break;
+    }
+    // Above the first heading nothing is active; at the very bottom the last
+    // section wins even if its heading never crosses the line.
+    if (!found && window.scrollY <= 0) found = null;
+    if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 2) {
+      found = entries[entries.length - 1];
+    }
+    mark(found);
+  }
+
+  function schedule() {
+    if (queued) return;
+    queued = true;
+    window.requestAnimationFrame(update);
+  }
+
+  update();
+  window.addEventListener("scroll", schedule, { passive: true });
+  window.addEventListener("resize", schedule);
+  window.addEventListener("hashchange", schedule);
 })();
 `;
 
@@ -2808,6 +2965,10 @@ const NOTES_SCRIPT = `
    * A note that is already resolved leaves the page alone.
    */
   function focusFromHash() {
+    // A real element with this id wins. Heading ids share the fragment
+    // namespace with \`#note-<id>\`, so a heading called "Note 3f2a91bc" has to
+    // scroll to itself rather than open a note that happens to share the tail.
+    if (location.hash.length > 1 && document.getElementById(location.hash.slice(1))) return;
     const raw = (location.hash || "").replace(/^#note-/, "");
     if (!raw || raw === location.hash) return;
     // A positional \`@<line>\` id arrives percent-encoded, so the fragment has to
@@ -3204,6 +3365,39 @@ body.dragging-page .space-current{
 }
 .tree-menu-pop a:hover,.tree-menu-pop button:hover{background:var(--surface-hover); text-decoration:none}
 .content{flex:1; padding:32px 40px; max-width:calc(var(--maxw) + 80px); width:100%}
+/* "On this page". A third flex column so .content keeps its measure, hidden
+   whenever the window is too narrow to afford it. min-width:0 and wrapping text
+   are load-bearing: body is a flex row, so an unbreakable line in here would
+   raise this column's min-content width and scroll the whole page sideways
+   instead of being clipped. */
+.toc{
+  flex:0 0 232px; min-width:0; align-self:flex-start; position:sticky; top:0;
+  max-height:100vh; overflow:auto;
+  /* Top padding clears .session-corner, which floats at top:12px and is 34px
+     tall — without it the rail's own heading sits under the Help button. */
+  padding:60px 24px 32px 0;
+}
+.toc-head{
+  color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.06em;
+  text-transform:uppercase; margin-bottom:10px;
+}
+.toc-list{list-style:none; margin:0; padding:0; border-left:1px solid var(--line)}
+.toc-item{margin:0}
+.toc-item > a{
+  display:block; padding:5px 10px; margin-left:-1px;
+  border-left:2px solid transparent; overflow-wrap:anywhere;
+  color:var(--muted); font-size:13px; line-height:1.4; text-decoration:none;
+}
+.toc-item[data-depth="1"] > a{padding-left:22px; font-size:12.5px}
+.toc-item[data-depth="2"] > a{padding-left:34px; font-size:12.5px}
+.toc-item > a:hover{color:var(--fg); text-decoration:none}
+/* data-active marks the section and its parent; data-current only the one the
+   reader is in. Both are data- attributes rather than the link's ARIA state,
+   because this stylesheet ships on every page and a view with no open page is
+   asserted to name nothing as current anywhere in its HTML. */
+.toc-item[data-active] > a{color:var(--fg-secondary)}
+.toc-item[data-current] > a{color:var(--accent); border-left-color:var(--accent)}
+@media (max-width:1180px){.toc{display:none}}
 .crumbs{color:var(--muted); font-size:13px; margin-bottom:18px}
 .crumbs .sep{color:var(--line); margin:0 2px}
 .page-head{display:flex; justify-content:space-between; gap:20px; align-items:flex-start}
@@ -3304,6 +3498,25 @@ body.dragging-page .space-current{
 .prose h1,.prose h2,.prose h3{line-height:1.25; margin-top:1.6em}
 .prose h2{font-size:22px; border-bottom:1px solid var(--line); padding-bottom:.2em}
 .prose h3{font-size:18px}
+/* Section links. Nothing is sticky above the content, so a #anchor already
+   lands at the top of the viewport; the margin is breathing room and clears the
+   floating .session-corner. The affordance sits after the heading text because
+   the left gutter belongs to .note-pin. */
+.prose :is(h1,h2,h3,h4,h5,h6){scroll-margin-top:28px}
+.section-link{
+  margin-left:.4em; color:var(--muted); text-decoration:none; font-weight:400;
+  opacity:0; transition:opacity .12s ease; cursor:pointer;
+}
+/* Generated, so the glyph stays out of the heading's textContent — see the
+   heading_close renderer for why that matters. */
+.section-link::before{content:"#"}
+@media (prefers-reduced-motion:reduce){.section-link{transition:none}}
+.prose :is(h1,h2,h3,h4,h5,h6):hover .section-link,
+.section-link:focus-visible{opacity:1}
+.section-link:hover{color:var(--accent)}
+.section-link.copied{opacity:1; color:var(--success-fg)}
+.section-link.copy-failed{opacity:1; color:var(--error-fg)}
+@media (hover:none){.section-link{opacity:.5}}
 .prose p,.prose ul,.prose ol{margin:.7em 0}
 .prose code{background:var(--code-bg); padding:.15em .35em; border-radius:4px;
   font-size:.88em; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}

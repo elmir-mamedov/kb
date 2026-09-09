@@ -21,7 +21,7 @@ import {
 import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
-import { createRenderer, sourceBlocks } from "./markdown.js";
+import { createRenderer, sourceBlocks, type Section } from "./markdown.js";
 import { collectNotes, groupNotesByPage, summarizeNotes } from "./note-index.js";
 import {
   insertNote,
@@ -443,11 +443,21 @@ async function renderPage(
   }
 
   const md = createRenderer((s) => titles.get(s), page.slug, (id) => ids.get(id));
-  const contentHtml = md.render(page.body);
+  // The renderer parks the page's headings on `env` as it goes, so the rail and
+  // the HTML it indexes come out of one pass and cannot disagree.
+  const env: Record<string, unknown> = {};
+  const contentHtml = md.render(page.body, env);
   const updated = await gitUpdated(page.fsPath);
   // The renderer stamps each note's id onto the block it belongs to; the client
   // needs the notes themselves to draw them.
   const notes = parseNotes(page.body);
+  // The rail lists h2 and h3. Deeper headings are still linkable — they get an
+  // id and a copy affordance like every other — but listing them turns the rail
+  // into a second copy of the page. An h1 in the body just repeats the title
+  // already standing above it.
+  const sections = ((env.fluxSections as Section[] | undefined) ?? []).filter(
+    (s) => s.level === 2 || s.level === 3
+  );
 
   const html = layout({
     siteTitle: SITE_TITLE,
@@ -459,6 +469,7 @@ async function renderPage(
     title: page.data.title,
     tags: page.data.tags,
     contentHtml,
+    sections,
     notes,
     updated,
     isArchived: page.data.archived === true,
