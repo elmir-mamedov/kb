@@ -45,6 +45,105 @@ export function resolveWikiTarget(
   return spaceKey ? `${spaceKey}/${target}` : target;
 }
 
+/**
+ * A heading's URL fragment, so a reader or an agent can link to one section of a
+ * page rather than to the whole thing.
+ *
+ * Decomposing and dropping combining marks folds `Kosťukovič` to `kostukovic`,
+ * which is what keeps a Czech heading's anchor short and typable once a browser
+ * percent-encodes it. What does not decompose is kept rather than deleted: this
+ * KB has Chinese headings (`一句话`), and the ASCII-only rule `content.ts` uses
+ * for filenames would leave those with no anchor at all.
+ *
+ * A literal hyphen is a separator like any other character, not something to
+ * preserve: keeping it would turn `P1 - Multi` into `p1---multi`, because the
+ * spaces on either side each match on their own. Underscores do survive, so
+ * `claude_code_launcher` stays one readable identifier.
+ *
+ * Quotes are deleted rather than separated so `isn't` reads `isnt`, and both the
+ * straight and curly shapes are listed because a heading is slugged from its raw
+ * source, where `typographer` has not curled them yet, while a `{#pin}` is
+ * stripped from the rendered text, where it has.
+ */
+export function headingSlug(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .replace(/['‘’"“”]/g, "")
+    .replace(/[^\p{L}\p{N}_]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * An explicit anchor pinned to the end of a heading: `## Rate limits {#limits}`.
+ * A slug derived from the text silently breaks every inbound link when the
+ * heading is reworded; a pin is how a link worth keeping is protected.
+ */
+const SECTION_PIN = /\s*\{#([\p{L}\p{N}_-]+)\}\s*$/u;
+
+/**
+ * The same shape, but incurious about what sits between the braces. Used only to
+ * strip a pin the strict pattern has already recognised in the raw source: by
+ * the time the rendered text is reached, `typographer` has turned a pin's `--`
+ * into an en-dash, which the strict pattern no longer matches — and the pin
+ * would be left showing in the heading.
+ */
+const SECTION_PIN_RENDERED = /\s*\{#[^}\n]*\}\s*$/;
+
+/** What a heading with no sluggable characters at all falls back to. */
+const SECTION_FALLBACK = "section";
+
+/**
+ * Ids a heading must not take, because the page already uses them for something
+ * else. `getElementById` returns the first match in document order, and every
+ * heading precedes `layout()`'s own `<div id="flux-notes">` — so a heading
+ * titled "Flux notes" would answer to that lookup and the notes feature would go
+ * dark with nothing logged anywhere.
+ */
+const RESERVED_SECTION_IDS = ["flux-notes"];
+
+/**
+ * Claim `base` for this page, suffixing `-2`, `-3`, … until it is free.
+ *
+ * `taken` holds ids that were actually emitted, not the base names they came
+ * from: a page with three `## Problem` headings *and* a literal `## problem-2`
+ * heading hands out `problem-2` twice if you only count bases.
+ *
+ * `avoid` additionally holds every id pinned anywhere on the page, so a derived
+ * slug steps over a name some later heading has reserved for itself.
+ */
+function reserveSectionId(taken: Set<string>, base: string, avoid?: Set<string>): string {
+  let id = base;
+  for (let n = 2; taken.has(id) || avoid?.has(id); n += 1) id = `${base}-${n}`;
+  taken.add(id);
+  return id;
+}
+
+/**
+ * Split a `#section` suffix off a link target.
+ *
+ * Exported because the move/rename rewriter in `content.ts` has to make the same
+ * cut: it remaps the page part of a wiki-link and must put the fragment back
+ * untouched, or a link to a section stops being rewritten when the page moves.
+ */
+export function splitFragment(raw: string): { target: string; fragment: string } {
+  const hash = raw.indexOf("#");
+  if (hash === -1) return { target: raw, fragment: "" };
+  return { target: raw.slice(0, hash), fragment: raw.slice(hash + 1).trim() };
+}
+
+/** A fragment as an href suffix, encoded so a non-ASCII anchor resolves. */
+function fragmentHref(fragment: string): string {
+  return fragment ? "#" + encodeURIComponent(fragment) : "";
+}
+
+/** A page slug as a root-relative href, each segment encoded, plus a fragment. */
+function pageHref(slug: string, fragment = ""): string {
+  const path = slug.split("/").map(encodeURIComponent).join("/");
+  return "/" + path + fragmentHref(fragment);
+}
+
 /** A trailing `=WxH` size spec inside an image's parens: `=600x`, `=600x400`, `=x400`. */
 const IMAGE_SIZE_RE = /^=(\d*)x(\d*)/;
 
@@ -484,6 +583,154 @@ function fluxAnchor(state: StateCore): void {
   }
 }
 
+/**
+ * Give every heading a stable `id` so it can be linked to directly.
+ *
+ * "Anchor" already means something else in this file — `fluxAnchor` above stamps
+ * the *source* position a block came from, for the notes feature — so everything
+ * to do with heading links is called a section instead.
+ *
+ * The slug comes from the inline token's raw `.content` rather than the rendered
+ * HTML, so markup in a heading (`## \`api.foo\` is *gone*`) contributes its text
+ * and not its tags. The id is also stashed on the matching `heading_close` token,
+ * which is where the renderer hangs the copy affordance.
+ */
+function fluxSection(state: StateCore): void {
+  const tokens = state.tokens;
+  const heads: { open: Token; close?: Token; inline: Token; pin: string | null }[] = [];
+  const pinned = new Set<string>();
+
+  // First pass: find the headings and take their pins off, collecting the pinned
+  // ids before any derived slug is handed out.
+  for (let i = 0; i < tokens.length; i += 1) {
+    const open = tokens[i];
+    if (open.type !== "heading_open") continue;
+    const inline = tokens[i + 1];
+    if (!inline || inline.type !== "inline") continue;
+
+    const pin = stripSectionPin(inline);
+    if (pin) pinned.add(pin);
+
+    let close: Token | undefined;
+    for (let j = i + 2; j < tokens.length; j += 1) {
+      if (tokens[j].type === "heading_close" && tokens[j].level === open.level) {
+        close = tokens[j];
+        break;
+      }
+    }
+    heads.push({ open, close, inline, pin });
+  }
+
+  // Second pass: assign. A pin outranks a derived slug — it is a promise to
+  // whatever already links there, and letting an earlier heading claim the name
+  // first would quietly demote the pin to `-2` and break that promise.
+  const taken = new Set<string>(RESERVED_SECTION_IDS);
+  const sections: Section[] = [];
+  for (const head of heads) {
+    // A second heading pinned to the same id loses it and falls back to its
+    // text, rather than silently shadowing the first.
+    const id =
+      head.pin && !taken.has(head.pin)
+        ? reserveSectionId(taken, head.pin)
+        : reserveSectionId(taken, headingSlug(head.inline.content) || SECTION_FALLBACK, pinned);
+
+    head.open.attrSet("id", id);
+    const text = inlineText(head.inline);
+    if (head.close) {
+      head.close.meta = { ...(head.close.meta ?? {}), sectionId: id, sectionText: text };
+    }
+    sections.push({
+      level: Number(head.open.tag.slice(1)),
+      text,
+      anchor: id,
+      line: head.open.map?.[0] ?? 0,
+    });
+  }
+
+  // Parked here rather than re-derived by the caller, so the page's table of
+  // contents and the HTML it indexes can only ever come from one pass.
+  (state.env as Record<string, unknown>).fluxSections = sections;
+}
+
+/**
+ * Take an explicit `{#pin}` off a heading — out of the slug source and out of
+ * the text the reader sees — and return the id it named.
+ *
+ * Detection reads `inline.content`, the heading's source before `typographer`
+ * touched it, so the id is exactly what the author typed. The strip against the
+ * rendered children has to be looser, because by then `{#a--b}` has become
+ * `{#a–b}` and the strict pattern would slide off it, leaving the pin on screen.
+ */
+function stripSectionPin(inline: Token): string | null {
+  const match = SECTION_PIN.exec(inline.content);
+  if (!match) return null;
+  inline.content = inline.content.replace(SECTION_PIN, "");
+
+  const children = inline.children ?? [];
+  for (let i = children.length - 1; i >= 0; i -= 1) {
+    const child = children[i];
+    if (child.type === "softbreak" || child.type === "hardbreak") continue;
+    // Only the last rendered child can hold the pin. If it is a code span or a
+    // link there is nothing to strip — the strict pattern would not have matched
+    // the raw content either, since that ends in a backtick or a paren.
+    if (child.type === "text") {
+      child.content = child.content.replace(SECTION_PIN_RENDERED, "");
+    }
+    break;
+  }
+  return match[1].toLowerCase();
+}
+
+/**
+ * A heading as the reader sees it: inline markup resolved away, tags dropped.
+ *
+ * The slug is taken from the raw source, but the rail and the MCP payload show
+ * this text to a person — raw source would put literal backticks and asterisks
+ * in front of them, and would join a setext heading's two lines with a newline.
+ */
+function inlineText(token: Token): string {
+  let out = "";
+  for (const child of token.children ?? []) {
+    if (child.type === "text" || child.type === "code_inline") out += child.content;
+    else if (child.type === "softbreak" || child.type === "hardbreak") out += " ";
+    else if (child.type === "image") out += child.content; // alt text
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
+/** One heading of a page, addressable by its `anchor`. */
+export interface Section {
+  /** 1–6, matching the `<h*>` level. */
+  level: number;
+  /** The heading's plain text, with any `{#pin}` already removed. */
+  text: string;
+  /** The URL fragment that scrolls to it, without the leading `#`. */
+  anchor: string;
+  /** 0-based start line within the body. */
+  line: number;
+}
+
+/**
+ * The headings of a body, with the anchors the renderer gives them.
+ *
+ * Shaped like `sourceBlocks` below, and for the same reason: the MCP server has
+ * to report anchors that the rendered page will actually have. Running the real
+ * parser is what guarantees that — the ids come from the same core rule, and
+ * `# comments` inside fenced code are excluded for free.
+ */
+export function extractSections(body: string): Section[] {
+  // Built once: `kb_search` asks for this per hit, and a fresh MarkdownIt drags
+  // the whole highlight.js wiring up with it. The rule is stateless — every id
+  // is reserved against a set created inside the pass — so one instance is safe
+  // to reuse across bodies.
+  sectionRenderer ??= createRenderer(() => undefined);
+  const env: Record<string, unknown> = {};
+  sectionRenderer.parse(body.replace(/\r\n?/g, "\n"), env);
+  return (env.fluxSections as Section[] | undefined) ?? [];
+}
+
+let sectionRenderer: MarkdownIt | undefined;
+
 /** A block anchor as attributes, for renderers that build their own open tag. */
 function anchorAttrs(md: MarkdownIt, token: Token): string {
   const anchor = (token.meta as { anchor?: { line: number; hash: string; notes: string[] } })
@@ -583,10 +830,37 @@ export function createRenderer(
     alt: ["paragraph", "reference", "blockquote", "list"],
   });
   md.core.ruler.push("flux_anchor", fluxAnchor);
+  // After flux_anchor, so a heading carries both its source position and its id.
+  md.core.ruler.push("flux_section", fluxSection);
   // A newline rather than "": markdown-it relies on block tokens emitting their
   // own separators, and an empty string merges the paragraphs of a tight list
   // that has a note between them.
   md.renderer.rules.flux_note = () => "\n";
+
+  // A hover affordance after each heading's text that copies the section's
+  // reference. It goes here rather than in the left gutter, which `.note-pin`
+  // already occupies. `href` is percent-encoded so a non-ASCII anchor resolves;
+  // `data-copy-slug` keeps the readable form, because that is what gets pasted.
+  const defaultHeadingClose =
+    md.renderer.rules.heading_close ??
+    ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  md.renderer.rules.heading_close = (tokens, idx, options, env, self) => {
+    const close = defaultHeadingClose(tokens, idx, options, env, self);
+    const meta = tokens[idx].meta as { sectionId?: string; sectionText?: string } | undefined;
+    const id = meta?.sectionId;
+    if (!id) return close;
+    const reference = md.utils.escapeHtml(currentSlug ? `${currentSlug}#${id}` : `#${id}`);
+    const href = md.utils.escapeHtml("#" + encodeURIComponent(id));
+    const label = md.utils.escapeHtml(`Copy link to section: ${meta?.sectionText || id}`);
+    // The element is deliberately empty and the "#" is drawn by CSS. A text node
+    // here would join the heading's textContent — which is what a reader sweeps
+    // up when they drag across a heading to leave a note on it.
+    return (
+      `<a class="section-link" href="${href}" data-copy-slug="${reference}"` +
+      ` data-copy-label="Section link" aria-label="${label}"></a>` +
+      close
+    );
+  };
 
   // Accept an optional `=WxH` size spec on images (`![alt](pic.png =600x)`),
   // the only way to size an image given `html: false` above.
@@ -619,8 +893,12 @@ export function createRenderer(
       // starts after the first pipe, escaped or not.
       const inner = state.src.slice(start + 2, end).replace(/\\\|/g, "|");
       const bar = inner.indexOf("|");
-      const rawTarget = bar === -1 ? inner : inner.slice(0, bar);
+      const withFragment = bar === -1 ? inner : inner.slice(0, bar);
       const label = bar === -1 ? undefined : inner.slice(bar + 1).trim();
+      // A `#section` suffix has to come off before the target is resolved —
+      // otherwise it is read as part of the page's name and nothing matches.
+      // The link text still names the page; use `|Label` to say more.
+      const { target: rawTarget, fragment } = splitFragment(withFragment);
       const target = rawTarget.trim();
       const idMatch = /^id:(.+)$/.exec(target);
 
@@ -632,12 +910,12 @@ export function createRenderer(
         const slug = resolveIdSlug(id);
         const open = state.push("link_open", "a", 1);
         if (slug !== undefined) {
-          open.attrSet("href", "/" + slug);
+          open.attrSet("href", pageHref(slug, fragment));
           open.attrSet("class", "wikilink");
           const t = state.push("text", "", 0);
           t.content = label || resolveTitle(slug) || slug.split("/").pop() || slug;
         } else {
-          open.attrSet("href", "/id:" + id);
+          open.attrSet("href", "/id:" + id + fragmentHref(fragment));
           open.attrSet("class", "wikilink broken");
           const t = state.push("text", "", 0);
           t.content = label || id;
@@ -648,7 +926,7 @@ export function createRenderer(
         const text = label || resolveTitle(slug) || slug.split("/").pop() || slug;
 
         const open = state.push("link_open", "a", 1);
-        open.attrSet("href", "/" + slug);
+        open.attrSet("href", pageHref(slug, fragment));
         open.attrSet("class", "wikilink");
         const t = state.push("text", "", 0);
         t.content = text;

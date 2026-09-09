@@ -918,3 +918,37 @@ test("updateRaw adds no id to a page that never had one", async () => {
     await kb.cleanup();
   }
 });
+
+test("a wiki-link into a section follows its page across a move, fragment intact", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await seedSpace(content, "Docs");
+    await content.createPage("docs", "Guide", "# Guide\n"); // becomes a section
+    const target = await content.createPage("docs/guide", "Target", "# Target\n");
+    await content.createPage("docs/guide", "Sibling", "See [[target#setup]].\n");
+    await content.createPage(
+      "docs",
+      "Cousin",
+      `Full [[docs/guide/target#setup]]. Abs [x](/docs/guide/target#setup). ` +
+        `Id [[id:${target.id}#setup|t]]. Table [[docs/guide/target#setup\\|the page]].\n`
+    );
+    await content.createPage("docs", "Dest", "# Dest\n");
+
+    await content.movePage("docs/guide/target", "docs/dest");
+
+    // Before the fragment split, `remap("docs/guide/target#setup")` matched
+    // nothing and the link was silently left pointing at the old location.
+    const sibling = await content.loadRaw("docs/guide/sibling");
+    assert.match(sibling!.raw, /\[\[docs\/dest\/target#setup\]\]/);
+
+    const cousin = await content.loadRaw("docs/cousin");
+    assert.match(cousin!.raw, /\[\[docs\/dest\/target#setup\]\]/);
+    assert.match(cousin!.raw, /\(\/docs\/dest\/target#setup\)/);
+    assert.match(cousin!.raw, /\[\[docs\/dest\/target#setup\\\|the page\]\]/);
+    // An id link is already move-proof, fragment and all.
+    assert.match(cousin!.raw, new RegExp(`\\[\\[id:${target.id}#setup\\|t\\]\\]`));
+  } finally {
+    await kb.cleanup();
+  }
+});

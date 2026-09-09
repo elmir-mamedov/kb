@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import matter from "gray-matter";
 import { parsePage, type Frontmatter } from "./frontmatter.js";
-import { resolveWikiTarget } from "./markdown.js";
+import { resolveWikiTarget, splitFragment } from "./markdown.js";
 
 export type TreeFilter = "live" | "archived" | "all";
 
@@ -1612,8 +1612,13 @@ export function rewriteLinks(raw: string, ctx: RewriteLinksCtx): string {
     // A link inside a table cell may write the pipe as `\|`; the escape belongs
     // to the label, not to the target it would otherwise be glued onto.
     const bar = inner.search(/\\?\|/);
-    const rawTarget = (bar === -1 ? inner : inner.slice(0, bar)).trim();
+    const targetPart = (bar === -1 ? inner : inner.slice(0, bar)).trim();
     const labelPart = bar === -1 ? "" : inner.slice(bar); // keeps the leading "|" or "\|"
+    // A `#section` suffix names a heading on the target page, not part of its
+    // slug: cut it off before remapping and put it back verbatim, or a link to
+    // a section quietly stops being rewritten when its page moves.
+    const { target: rawTarget, fragment } = splitFragment(targetPart);
+    const frag = fragment ? `#${fragment}` : "";
     if (!rawTarget || /^id:/i.test(rawTarget)) return full;
 
     const hadSlash = rawTarget.startsWith("/");
@@ -1624,7 +1629,7 @@ export function rewriteLinks(raw: string, ctx: RewriteLinksCtx): string {
       // into the moved subtree.
       const mapped = remap(bareTarget);
       if (mapped === bareTarget) return full;
-      return `[[${hadSlash ? "/" : ""}${mapped}${labelPart}]]`;
+      return `[[${hadSlash ? "/" : ""}${mapped}${frag}${labelPart}]]`;
     }
 
     // Bare name: resolve against the pre-move tree to see what it pointed at.
@@ -1633,7 +1638,7 @@ export function rewriteLinks(raw: string, ctx: RewriteLinksCtx): string {
     const newTarget = remap(preTarget);
     // Keep it bare if it still resolves to the right page from the new context.
     if (resolveWikiTarget(rawTarget, postSlug, postIsPage) === newTarget) return full;
-    return `[[${newTarget}${labelPart}]]`;
+    return `[[${newTarget}${frag}${labelPart}]]`;
   });
 
   // Absolute Markdown links `](/space/…)` — pure prefix rewrite.

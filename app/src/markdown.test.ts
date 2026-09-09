@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRenderer, sourceBlocks } from "./markdown.js";
+import { createRenderer, extractSections, headingSlug, sourceBlocks } from "./markdown.js";
 
 /** Render Markdown with a renderer scoped to a representative page slug. */
 const render = (src: string) =>
@@ -186,7 +186,9 @@ test("a flux:note comment renders nothing, not escaped text", () => {
 
 test("the block below a note carries its id, and every top-level block is anchored", () => {
   const html = render("# Title\n\n" + noteComment("aaa", "Fix this.") + "\nAnnotated paragraph.\n");
-  assert.match(html, /<h1 data-src-line="0" data-src-hash="[0-9a-f]{8}">Title<\/h1>/);
+  // The heading also carries its section id and copy affordance; what matters
+  // here is that the source anchors survive alongside them.
+  assert.match(html, /<h1 data-src-line="0" data-src-hash="[0-9a-f]{8}" id="title">Title</);
   assert.match(html, /<p data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-flux-notes="aaa">/);
 });
 
@@ -268,4 +270,226 @@ test("a note nested in a list does not change the list's hash", () => {
   const plain = "- one\n- two\n";
   const annotated = "- one\n- two\n\n  " + noteComment("aaa", "Fix.").replace(/\n/g, "\n  ") + "\n";
   assert.equal(sourceBlocks(plain)[0].hash, sourceBlocks(annotated)[0].hash);
+});
+
+// --- section anchors ---------------------------------------------------------
+
+test("headingSlug lowercases, separates on punctuation, and trims", () => {
+  assert.equal(
+    headingSlug("Choose between per-directory CLAUDE.md and path-scoped rules"),
+    "choose-between-per-directory-claude-md-and-path-scoped-rules"
+  );
+  assert.equal(headingSlug("Step 1: Install"), "step-1-install");
+  assert.equal(headingSlug("Traces (beta)"), "traces-beta");
+  assert.equal(headingSlug("Postgres or DBX?"), "postgres-or-dbx");
+});
+
+test("headingSlug drops quotes rather than breaking the word on them", () => {
+  // `typographer` has already curled the apostrophe by the time the rule runs,
+  // so both shapes have to land on the same anchor.
+  assert.equal(headingSlug("Session isn't responding"), "session-isnt-responding");
+  assert.equal(headingSlug("Session isn’t responding"), "session-isnt-responding");
+});
+
+test("headingSlug folds diacritics but keeps letters that do not decompose", () => {
+  // Folding keeps a Czech anchor typable once a browser percent-encodes it;
+  // an ASCII-only rule would leave the Chinese headings with no anchor at all.
+  assert.equal(headingSlug("Příliš žluťoučký kůň"), "prilis-zlutoucky-kun");
+  assert.equal(headingSlug("FDT-94 — DEV landing · Vladimír Kosťukovič"), "fdt-94-dev-landing-vladimir-kostukovic");
+  assert.equal(headingSlug("一句话"), "一句话");
+  assert.equal(headingSlug("✅ Cluster 1 — verified (2026-08-06)"), "cluster-1-verified-2026-08-06");
+});
+
+test("headingSlug collapses separator runs instead of stacking hyphens", () => {
+  // A literal hyphen is a separator too; keeping it would make the spaces on
+  // either side each add one of their own.
+  assert.equal(headingSlug("P1 - Multi-PDF batch"), "p1-multi-pdf-batch");
+  assert.equal(headingSlug("A -- B"), "a-b");
+  // Underscores survive, so an identifier stays one readable word.
+  assert.equal(headingSlug("`user_identifier` — the answer"), "user_identifier-the-answer");
+});
+
+test("every heading level gets an id", () => {
+  const html = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n");
+  for (const [tag, id] of [["h1", "one"], ["h2", "two"], ["h3", "three"], ["h4", "four"], ["h5", "five"], ["h6", "six"]]) {
+    assert.match(html, new RegExp(`<${tag}[^>]* id="${id}"`));
+  }
+});
+
+test("repeated heading text is suffixed, and the first keeps the bare anchor", () => {
+  const html = render("## Problem\n\ntext\n\n## Problem\n\ntext\n\n## Problem\n");
+  assert.match(html, /<h2[^>]* id="problem">/);
+  assert.match(html, /<h2[^>]* id="problem-2">/);
+  assert.match(html, /<h2[^>]* id="problem-3">/);
+});
+
+test("a heading whose text already looks like a suffix does not collide", () => {
+  // Counting base names alone would hand out `problem-2` twice here.
+  const html = render("## Problem\n\n## Problem\n\n## problem-2\n");
+  const ids = [...html.matchAll(/<h2[^>]* id="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(ids, ["problem", "problem-2", "problem-2-2"]);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("a {#pin} sets the anchor and is not rendered as heading text", () => {
+  const html = render("## Rate limits {#limits}\n");
+  assert.match(html, /<h2[^>]* id="limits">/);
+  assert.match(html, />Rate limits</);
+  assert.doesNotMatch(html, /\{#limits\}/);
+});
+
+test("a {#pin} survives markup at the end of the heading", () => {
+  assert.match(render("## Rate `limits` {#a}\n"), /<h2[^>]* id="a">Rate <code>limits<\/code></);
+  assert.match(render("## Trailing *stress* {#b}\n"), /<h2[^>]* id="b">Trailing <em>stress<\/em></);
+});
+
+test("a brace group that is not at the end is left alone", () => {
+  const html = render("## Has {#notapin} in the middle\n");
+  assert.match(html, /<h2[^>]* id="has-notapin-in-the-middle">/);
+  assert.match(html, /\{#notapin\}/);
+});
+
+test("a heading with nothing sluggable falls back to a numbered section id", () => {
+  const html = render("## \u{1F389}\n\n## \u{1F680}\n");
+  assert.match(html, /<h2[^>]* id="section">/);
+  assert.match(html, /<h2[^>]* id="section-2">/);
+});
+
+test("each heading carries a copy affordance addressed to the current page", () => {
+  const html = render("## Rate limits\n");
+  assert.match(
+    html,
+    /<a class="section-link" href="#rate-limits" data-copy-slug="flux\/page#rate-limits" data-copy-label="Section link"/
+  );
+});
+
+test("a non-ASCII anchor is percent-encoded in href but readable in what is copied", () => {
+  const html = render("## 一句话\n");
+  assert.match(html, /href="#%E4%B8%80%E5%8F%A5%E8%AF%9D"/);
+  assert.match(html, /data-copy-slug="flux\/page#一句话"/);
+});
+
+test("extractSections reports the same anchors the renderer stamps", () => {
+  const body = "# Title\n\n## Problem\n\n### Detail\n\n## Problem\n";
+  const html = render(body);
+  const sections = extractSections(body);
+  assert.deepEqual(
+    sections.map((s) => s.anchor),
+    ["title", "problem", "detail", "problem-2"]
+  );
+  for (const section of sections) {
+    assert.match(html, new RegExp(`id="${section.anchor}"`));
+  }
+});
+
+test("extractSections reports level, text and line, with the pin stripped", () => {
+  const sections = extractSections("# Title\n\ntext\n\n## Rate limits {#limits}\n");
+  assert.deepEqual(sections, [
+    { level: 1, text: "Title", anchor: "title", line: 0 },
+    { level: 2, text: "Rate limits", anchor: "limits", line: 4 },
+  ]);
+});
+
+test("a # line inside a fence is code, not a section", () => {
+  const body = "## Real\n\n```bash\n# not a heading\n```\n";
+  assert.deepEqual(
+    extractSections(body).map((s) => s.anchor),
+    ["real"]
+  );
+  assert.doesNotMatch(render(body), /id="not-a-heading"/);
+});
+
+// --- fragments in links ------------------------------------------------------
+
+test("[[slug#section]] resolves the page and keeps the fragment", () => {
+  const md = createRenderer(
+    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
+    "flux/page"
+  );
+  const html = md.render("See [[flux/ledger#retention]].");
+  assert.match(html, /<a href="\/flux\/ledger#retention" class="wikilink">Ledger<\/a>/);
+});
+
+test("[[id:<id>#section]] resolves the id and keeps the fragment", () => {
+  const md = createRenderer(
+    (slug) => (slug === "flux/moved-here" ? "Moved Page" : undefined),
+    "flux/page",
+    (id) => (id === "abc123" ? "flux/moved-here" : undefined)
+  );
+  const html = md.render("See [[id:abc123#retention|the rules]].");
+  assert.match(html, /<a href="\/flux\/moved-here#retention" class="wikilink">the rules<\/a>/);
+});
+
+test("an unknown id with a fragment still renders as visibly broken", () => {
+  const md = createRenderer(() => undefined, "flux/page", () => undefined);
+  const html = md.render("See [[id:nope#retention]].");
+  assert.match(html, /class="wikilink broken"/);
+  assert.match(html, /href="\/id:nope#retention"/);
+});
+
+test("a fragment on a bare wiki-link does not become part of the page name", () => {
+  const md = createRenderer(
+    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
+    "flux/page"
+  );
+  const html = md.render("See [[ledger#retention]].");
+  assert.match(html, /href="\/flux\/ledger#retention"/);
+});
+
+test("a non-ASCII fragment is encoded in the href", () => {
+  const md = createRenderer(
+    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
+    "flux/page"
+  );
+  assert.match(
+    md.render("[[flux/ledger#一句话]]"),
+    /href="\/flux\/ledger#%E4%B8%80%E5%8F%A5%E8%AF%9D"/
+  );
+});
+
+test("a pin outranks a derived slug that would have taken its name first", () => {
+  // A pin is a promise to whatever already links there. Letting the earlier
+  // heading claim `overview` would demote the pin to `overview-2` and break it.
+  const html = render("## Overview\n\ntext\n\n## Something else {#overview}\n");
+  assert.match(html, /<h2[^>]* id="overview-2">Overview</);
+  assert.match(html, /<h2[^>]* id="overview">Something else</);
+});
+
+test("a second heading pinned to the same id falls back to its own text", () => {
+  const html = render("## First {#dup}\n\n## Second {#dup}\n");
+  assert.match(html, /<h2[^>]* id="dup">First</);
+  assert.match(html, /<h2[^>]* id="second">Second</);
+});
+
+test("a pin containing -- is still removed from the rendered heading", () => {
+  // typographer turns the pin's `--` into an en-dash before the strip runs, so
+  // a strict pattern slides off it and leaves `{#a-b}` showing.
+  const html = render("## Rate limits {#a--b}\n");
+  assert.match(html, /<h2[^>]* id="a--b">Rate limits</);
+  assert.doesNotMatch(html, /\{#/);
+});
+
+test("a heading cannot take an id the page already uses for something else", () => {
+  // getElementById returns the first match in document order, and every heading
+  // precedes layout()'s own <div id="flux-notes">.
+  assert.match(render("## Flux notes\n"), /<h2[^>]* id="flux-notes-2">/);
+});
+
+test("a section's text is what the reader sees, not the raw source", () => {
+  assert.equal(extractSections("## `api.foo` is *gone*\n")[0].text, "api.foo is gone");
+  assert.equal(extractSections("Setext heading\n---\n")[0].text, "Setext heading");
+});
+
+test("the copy affordance is an empty element, so no glyph joins the heading text", () => {
+  // A "#" text node here would be swept up by a reader dragging across the
+  // heading to leave a note on it. CSS draws it instead.
+  const html = render("## Rate limits\n");
+  assert.match(html, /data-copy-label="Section link" aria-label="Copy link to section: Rate limits"><\/a>/);
+});
+
+test("rendering parks the same sections on env that extractSections reports", () => {
+  const body = "## One\n\n### Two\n\n## One\n";
+  const env: Record<string, unknown> = {};
+  createRenderer(() => undefined, "flux/page").render(body, env);
+  assert.deepEqual(env.fluxSections, extractSections(body));
 });
