@@ -38,6 +38,8 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
 - Requires sign-in before viewing or editing pages.
 - Renders each `.md` page: frontmatter title + tags, markdown body, `[[wiki-links]]`,
   code highlighting.
+- Gives every heading an anchor, a hover `#` that copies `space/page#anchor`, and an
+  "On this page" rail listing the page's `##`/`###` sections.
 - Shows the page's last-updated date from `git log` (falls back gracefully).
 - Edits existing pages in the browser at `/_edit/<slug>`.
 - Validates frontmatter before saving.
@@ -62,7 +64,9 @@ Read tools:
 - `kb_list_pages` — returns the navigation tree. Supports `filter`:
   `live`, `archived`, or `all`, and `space`.
 - `kb_get_page` — reads one page by slug. Supports `format`: `parsed` or `raw`.
+  The parsed form lists the page's `sections` with the anchor each heading links by.
 - `kb_search` — searches titles, slugs, tags, summaries, and Markdown body text.
+  A body hit also reports the `section` it fell under.
 
 Write tools (auto-commit to Git):
 
