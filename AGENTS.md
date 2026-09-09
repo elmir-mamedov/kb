@@ -29,7 +29,18 @@ Tests use Node's built-in runner (`node:test`) executed through `tsx`; run them 
 
 ## Commit & Pull Request Guidelines
 
-No root Git history is available in this checkout, so no repository-wide commit convention can be inferred. Use concise, imperative commit messages, for example `Add markdown link rendering`. For knowledge-base auto-commits, `kb/README.md` documents the pattern `Update engineering/runbooks/deploy.md via web`.
+Commit as you work. Every significant change — a feature, a fix, a refactor, a docs or content update — lands as its own commit once `npm run typecheck` and `npm test` pass. Do not leave finished work sitting uncommitted for someone else to stage, and do not roll unrelated changes into one commit. Stage deliberately with explicit paths (`git add app/src/views.ts`), not `git add -A`, so the diff matches the message. If the change belongs on a branch, branch first and then commit. Committing is expected; pushing is not — push only when asked.
+
+Write messages as [Conventional Commits](https://www.conventionalcommits.org): `<type>(<scope>): <description>`. Commits made before this convention was adopted do not follow it; leave them alone and apply it going forward.
+
+- **Type:** one of `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `chore`, `build`, `ci`, `revert`. Pick by what the change does to the product, not by which files it touches — a fix that only edits a test is still `test` if the behaviour did not change.
+- **Scope:** optional but preferred, and it names the module or area rather than a path: `server`, `content`, `markdown`, `frontmatter`, `views`, `mcp`, `kb`.
+- **Description:** imperative mood, lowercase, no trailing period, and keep the whole subject line under 72 characters. `feat(markdown): add =WxH image size syntax`, not `feat(markdown): Added =WxH image size syntax.`
+- **Body:** separated from the subject by a blank line and wrapped at 72 characters. Say why the change was needed and what it does about it; the diff already shows how. Omit the body only when the subject genuinely says everything.
+- **Breaking changes:** mark them with `!` before the colon (`feat(mcp)!: rename the token parameter`) and describe the break in a `BREAKING CHANGE:` footer.
+- **Trailers:** none otherwise. Never add `Co-Authored-By`, `Generated with`, or any other attribution or tooling footer.
+
+For knowledge-base auto-commits, `kb/README.md` documents the pattern `Update engineering/runbooks/deploy.md via web`.
 
 Pull requests should include a short summary, verification steps, affected paths, and screenshots for UI changes. Link relevant issues or planning docs when applicable.
 
