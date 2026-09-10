@@ -25,8 +25,10 @@ import { createRenderer, sourceBlocks, type Section } from "./markdown.js";
 import { collectNotes, groupNotesByPage, summarizeNotes } from "./note-index.js";
 import {
   insertNote,
+  isAgentNote,
   newNoteId,
   normalizeQuote,
+  noteStamp,
   parseNotes,
   removeNote,
   splitFrontmatter,
@@ -1136,7 +1138,14 @@ function resolveAnchor(body: string, line: number, hash: string): number | null 
   return blocks.find((b) => b.hash === hash)?.line ?? null;
 }
 
-/** The note kind a form field names, or undefined if it names none of them. */
+/**
+ * The note kind a form field names, or undefined if it names none of them.
+ *
+ * `agent` is missing on purpose: this is the list of kinds a *person* may write,
+ * and leaving it out is what keeps an agent note something only an agent can
+ * have said. A request naming it reads as naming nothing, so the add branch
+ * below falls back to a task the same way it does for a typo.
+ */
 function noteKindOf(value: string | null): NoteKind | undefined {
   return value === "task" || value === "remark" || value === "highlight" ? value : undefined;
 }
@@ -1175,6 +1184,16 @@ app.post("/_notes/*", async (req, reply) => {
       return reply
         .code(409)
         .send({ ok: false, error: "That note is already gone. Reload the page." });
+    }
+
+    // A note from an agent is the agent's own words; a reader can take it down
+    // but not put words in its mouth. The client offers no Edit button for one,
+    // and this is the same rule where it actually holds.
+    if (isAgentNote(current)) {
+      return reply.code(403).send({
+        ok: false,
+        error: "A note from the agent can't be edited — resolve it instead.",
+      });
     }
 
     // An absent or unrecognised kind leaves the note's own rather than quietly
@@ -1223,8 +1242,7 @@ app.post("/_notes/*", async (req, reply) => {
     nextBody = insertNote(body, line, {
       id: newNoteId(),
       kind,
-      // Seconds are plenty for something a person reads as "2h ago".
-      at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      at: noteStamp(),
       by: AUTH_USERNAME,
       quote: quote || undefined,
       text,
