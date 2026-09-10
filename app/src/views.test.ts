@@ -652,7 +652,7 @@ test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
   assert.match(html, /pin\.classList\.toggle\("is-highlight", loudest === "highlight"\)/);
 });
 
-test("notes: an agent's note is green, and a reader can only resolve it", () => {
+test("notes: an agent's note is pink, and a reader can only resolve it", () => {
   const html = layout(pageView());
   // Every theme block defines the palette; one missing it renders unstyled.
   for (const token of [
@@ -664,10 +664,9 @@ test("notes: an agent's note is green, and a reader can only resolve it", () => 
   ]) {
     assert.equal(html.split(token).length - 1, 3, token + " is not in all three theme blocks");
   }
-  // The green this is named for only reads on black, so it is the pin on the dark
-  // page and a darkened one on the light — the same split the yellow already needs.
-  assert.equal(html.split("--agent-pin:#00c853").length - 1, 1);
-  assert.equal(html.split("--agent-pin:#00ff41").length - 1, 2);
+  // Pink is legible on white and on black, so the pin carries one value across
+  // all three — the split the highlight's yellow needs is not needed here.
+  assert.equal(html.split("--agent-pin:#ff2d87").length - 1, 3);
   assert.match(html, /\.note-mark\.is-agent,[^{]+\{\s*--note-bg:var\(--agent-bg\)/);
   // No .note-kind-option, because the switch never offers a kind nobody can
   // write — so the chip needs a name from somewhere other than KINDS.

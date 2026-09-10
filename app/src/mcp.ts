@@ -35,7 +35,7 @@ const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
 /**
  * The `by=` line on a note this server writes. Fixed, not a tool parameter: the
  * web side does not let a writer choose its own byline either (it comes from
- * AUTH_USERNAME), and a parameter would let a model sign a green note with a
+ * AUTH_USERNAME), and a parameter would let a model sign a pink note with a
  * person's name.
  */
 const NOTE_AUTHOR = "agent";
@@ -787,7 +787,7 @@ server.registerTool(
   {
     title: "Leave an Agent Note",
     description:
-      "Leave a note of your own on one passage of a page: a short explanation, anchored to the words it is about and shown to the reader in place, in green, as yours. This is how you say why a page reads the way it does — after an edit whose reason a diff will not show (why a figure changed, what you could not verify, which of two readings you took), or to flag something you noticed and were not asked to change. `quote` is the text to anchor to, copied as a reader sees it: plain words with no Markdown markup, from inside a single paragraph, list, heading, table or code block — kb_get_page returns the source to copy from. A quote that is not found, or that appears in more than one block, is refused rather than guessed at. `text` is required, unlike a human highlight: a green mark with nothing written on it explains nothing. Leave one note per thing actually worth saying, not one per paragraph — a page fenced in green marks is one nobody reads. A person can resolve your note but never edit it, so write it to be read once and taken down; take down your own with kb_resolve_agent_note.",
+      "Leave a note of your own on one passage of a page: a short explanation, anchored to the words it is about and shown to the reader in place, in pink, as yours. This is how you say why a page reads the way it does — after an edit whose reason a diff will not show (why a figure changed, what you could not verify, which of two readings you took), or to flag something you noticed and were not asked to change. `quote` is the text to anchor to, copied as a reader sees it: plain words with no Markdown markup, from inside a single paragraph, list, heading, table or code block — kb_get_page returns the source to copy from. A quote that is not found, or that appears in more than one block, is refused rather than guessed at. `text` is required, unlike a human highlight: a pink mark with nothing written on it explains nothing. Leave one note per thing actually worth saying, not one per paragraph — a page fenced in pink marks is one nobody reads. A person can resolve your note but never edit it, so write it to be read once and taken down; take down your own with kb_resolve_agent_note.",
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       quote: z

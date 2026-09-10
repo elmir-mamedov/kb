@@ -35,11 +35,11 @@ export type ResolveNoteResult =
  * The stored quote is the one `locateQuote` hands back, not the one that came
  * in: markup is resolved away and punctuation smartened, so the note anchors to
  * what the reader actually sees. Text is required, unlike a highlight's — a
- * green note with nothing written on it would explain nothing.
+ * pink note with nothing written on it would explain nothing.
  *
  * An identical note already on the page is left alone and reported as such
  * rather than duplicated. A tool call that times out after the write has landed
- * gets retried, and two identical green marks on one passage are worse than a
+ * gets retried, and two identical pink marks on one passage are worse than a
  * no-op.
  */
 export function addAgentNote(

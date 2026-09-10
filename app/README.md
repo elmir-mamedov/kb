@@ -42,7 +42,7 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
   "On this page" rail listing the page's `##`/`###` sections.
 - Carries inline notes: select a phrase and leave a `task`, `remark` or `highlight`
   on it, stored as a comment in the page's own Markdown. An `agent` note is the
-  fourth kind — written over MCP, drawn green, and resolve-only in the browser.
+  fourth kind — written over MCP, drawn pink, and resolve-only in the browser.
 - Shows the page's last-updated date from `git log` (falls back gracefully).
 - Edits existing pages in the browser at `/_edit/<slug>`.
 - Validates frontmatter before saving.
@@ -82,7 +82,7 @@ Write tools (auto-commit to Git):
 - `kb_create_folder` — create a section (a folder with its own `index.md`).
 - `kb_rename_folder` — rename a section, moving the pages under it.
 - `kb_update_page` — replace a page's full raw Markdown (frontmatter validated).
-- `kb_add_agent_note` — leave a green note on the block containing a quoted
+- `kb_add_agent_note` — leave a pink note on the block containing a quoted
   passage. Refuses a quote it cannot find, or finds in more than one block.
 - `kb_resolve_agent_note` — take back one of those notes by id. Agent notes only;
   a person's note is closed by addressing it in a `kb_update_page` call.

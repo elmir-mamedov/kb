@@ -28,7 +28,7 @@ import { randomBytes } from "node:crypto";
  *
  * An `agent` note runs the other way: it is something an agent left *for* the
  * reader, an explanation of a page it just wrote or changed. A person can
- * resolve one but never write or reword one, so a green note on a page is
+ * resolve one but never write or reword one, so a pink note on a page is
  * always something the agent itself actually said.
  */
 export type NoteKind = "task" | "remark" | "highlight" | "agent";
