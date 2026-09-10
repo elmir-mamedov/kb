@@ -40,6 +40,9 @@ KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
   code highlighting.
 - Gives every heading an anchor, a hover `#` that copies `space/page#anchor`, and an
   "On this page" rail listing the page's `##`/`###` sections.
+- Carries inline notes: select a phrase and leave a `task`, `remark` or `highlight`
+  on it, stored as a comment in the page's own Markdown. An `agent` note is the
+  fourth kind — written over MCP, drawn green, and resolve-only in the browser.
 - Shows the page's last-updated date from `git log` (falls back gracefully).
 - Edits existing pages in the browser at `/_edit/<slug>`.
 - Validates frontmatter before saving.
@@ -61,10 +64,14 @@ npm run mcp
 Read tools:
 
 - `kb_list_spaces` — returns the spaces (top-level containers). Supports `filter`.
+- `kb_get_space_instructions` — reads a space's standing instructions and its
+  write token.
 - `kb_list_pages` — returns the navigation tree. Supports `filter`:
   `live`, `archived`, or `all`, and `space`.
 - `kb_get_page` — reads one page by slug. Supports `format`: `parsed` or `raw`.
   The parsed form lists the page's `sections` with the anchor each heading links by.
+- `kb_list_notes` — returns the inline notes left on pages. Supports `slug`,
+  `space`, `kind`, `filter` and `limit`.
 - `kb_search` — searches titles, slugs, tags, summaries, and Markdown body text.
   A body hit also reports the `section` it fell under.
 
@@ -72,7 +79,13 @@ Write tools (auto-commit to Git):
 
 - `kb_create_page` — single-shot create from `parent` + `title` + `body`
   (optional `tags`, `summary`).
+- `kb_create_folder` — create a section (a folder with its own `index.md`).
+- `kb_rename_folder` — rename a section, moving the pages under it.
 - `kb_update_page` — replace a page's full raw Markdown (frontmatter validated).
+- `kb_add_agent_note` — leave a green note on the block containing a quoted
+  passage. Refuses a quote it cannot find, or finds in more than one block.
+- `kb_resolve_agent_note` — take back one of those notes by id. Agent notes only;
+  a person's note is closed by addressing it in a `kb_update_page` call.
 - `kb_archive_page` / `kb_restore_page` — toggle archived frontmatter flags
   (reversible; works on section subtrees).
 - `kb_move_page` — move a page or section under a new parent (collisions auto-suffix).
