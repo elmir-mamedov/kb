@@ -9,7 +9,8 @@ import * as z from "zod/v4";
 import { Content, flatten, isFolderPage, type PageNode, type TreeFilter } from "./content.js";
 import { makeGit } from "./git.js";
 import { collectNotes } from "./note-index.js";
-import { parseNotes, type Note, type NoteKind } from "./notes.js";
+import { parseNotes, splitFrontmatter, type Note, type NoteKind } from "./notes.js";
+import { addAgentNote, resolveAgentNote } from "./note-write.js";
 import { searchPages } from "./search.js";
 import { extractSections } from "./markdown.js";
 import {
@@ -31,6 +32,13 @@ const KB_DIR = path.resolve(
   process.env.KB_DIR ?? path.join(__dirname, "..", "..", "kb")
 );
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
+/**
+ * The `by=` line on a note this server writes. Fixed, not a tool parameter: the
+ * web side does not let a writer choose its own byline either (it comes from
+ * AUTH_USERNAME), and a parameter would let a model sign a green note with a
+ * person's name.
+ */
+const NOTE_AUTHOR = "agent";
 const VERSION = "0.1.0";
 
 const content = new Content(KB_DIR);
@@ -486,7 +494,7 @@ server.registerTool(
   {
     title: "List KB Notes",
     description:
-      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history. A note is written into the Markdown as `<!-- flux:note id=... kind=task|remark|highlight ... -->`, anchored directly above the block it refers to. Never delete a note without addressing it, and never leave one you have acted on.",
+      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is; an `agent` note is one you left yourself, explaining something about the page to whoever reads it next, and is not work either — leave it alone unless it has gone wrong, and take it down with kb_resolve_agent_note rather than by hand. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history. A note is written into the Markdown as `<!-- flux:note id=... kind=task|remark|highlight|agent ... -->`, anchored directly above the block it refers to. Never delete a note without addressing it, and never leave one you have acted on.",
     inputSchema: {
       slug: z.string().optional().describe("Limit to a single page, by slug."),
       space: z
@@ -494,7 +502,7 @@ server.registerTool(
         .optional()
         .describe("Limit to a single space (its top-level folder key, e.g. flux)."),
       kind: z
-        .enum(["task", "remark", "highlight"])
+        .enum(["task", "remark", "highlight", "agent"])
         .optional()
         .describe("Limit to one kind of note."),
       filter: filterSchema.optional().describe("Which pages to include. Defaults to live."),
@@ -712,7 +720,7 @@ server.registerTool(
   {
     title: "Update KB Page",
     description:
-      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required), and it must keep the page's existing `id` — that id is what `[[id:<id>]]` links resolve through, so read the current source first with kb_get_page (format: raw) rather than composing frontmatter from scratch. Do not add or reword inline notes as a side effect of an unrelated edit; preserve the ones you were not asked about. Folders have no body and are rejected — use kb_rename_folder to rename one.",
+      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required), and it must keep the page's existing `id` — that id is what `[[id:<id>]]` links resolve through, so read the current source first with kb_get_page (format: raw) rather than composing frontmatter from scratch. Do not add or reword inline notes as a side effect of an unrelated edit; preserve the ones you were not asked about. To leave an explanation of your own, use kb_add_agent_note rather than writing `<!-- flux:note ... -->` syntax by hand — a note written by hand gets no id, so nothing can resolve it afterwards. Folders have no body and are rejected — use kb_rename_folder to rename one.",
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
@@ -746,6 +754,142 @@ server.registerTool(
         // Flagged when the submitted frontmatter dropped or altered the page's
         // stable id and the on-disk one was restored — read before you rewrite.
         ...(mutation.idPreserved && { idPreserved: true }),
+        ...(await writeToken(spaceKey)),
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+/**
+ * Write a page body back and commit it, for the two note tools below.
+ *
+ * Through `updateRaw`, so a note write is held to the same frontmatter
+ * validation and folder rules as any other edit, and with the header's bytes
+ * carried across untouched: leaving a note is not an edit to the YAML, and
+ * reformatting someone's frontmatter as a side effect of one would be a surprise
+ * in the diff.
+ */
+async function commitNoteWrite(slug: string, header: string, body: string, verb: string) {
+  const mutation = await content.updateRaw(slug, header + body);
+  if (!mutation) return null;
+  const relPath = git.kbRelPath(mutation.fsPath);
+  return {
+    slug: mutation.slug,
+    path: relPath,
+    commit: await git.commitFiles([mutation.fsPath], `${verb} ${relPath} via mcp`),
+  };
+}
+
+server.registerTool(
+  "kb_add_agent_note",
+  {
+    title: "Leave an Agent Note",
+    description:
+      "Leave a note of your own on one passage of a page: a short explanation, anchored to the words it is about and shown to the reader in place, in green, as yours. This is how you say why a page reads the way it does — after an edit whose reason a diff will not show (why a figure changed, what you could not verify, which of two readings you took), or to flag something you noticed and were not asked to change. `quote` is the text to anchor to, copied as a reader sees it: plain words with no Markdown markup, from inside a single paragraph, list, heading, table or code block — kb_get_page returns the source to copy from. A quote that is not found, or that appears in more than one block, is refused rather than guessed at. `text` is required, unlike a human highlight: a green mark with nothing written on it explains nothing. Leave one note per thing actually worth saying, not one per paragraph — a page fenced in green marks is one nobody reads. A person can resolve your note but never edit it, so write it to be read once and taken down; take down your own with kb_resolve_agent_note.",
+    inputSchema: {
+      slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
+      quote: z
+        .string()
+        .min(1)
+        .describe(
+          "The passage to anchor the note to, as a reader sees it. Must appear in exactly one block of the page."
+        ),
+      text: z.string().min(1).describe("The note itself — what the reader should know here."),
+      spaceInstructionsToken: instructionTokenSchema,
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, quote, text, spaceInstructionsToken }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
+    if (gate) return gate;
+
+    try {
+      const page = await content.loadRaw(slug);
+      if (!page) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
+      const { header, body } = splitFrontmatter(page.raw);
+      const written = addAgentNote(body, { quote, text, author: NOTE_AUTHOR });
+      if (!written.ok) return errorResult(written.error);
+
+      // The same note was already on the page — a retried call, most likely. Say
+      // where it is and write nothing, rather than leaving two identical marks.
+      if (!written.added) {
+        return textResult({
+          added: false,
+          reason: "An identical note is already on that passage.",
+          slug: cleanSlug(slug),
+          path: git.kbRelPath(page.fsPath),
+          noteId: written.note.id,
+          quote: written.note.quote,
+          ...(await writeToken(spaceKey)),
+        });
+      }
+
+      const mutation = await commitNoteWrite(slug, header, written.body, "Add note to");
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
+      return textResult({
+        added: true,
+        ...mutation,
+        noteId: written.note.id,
+        // The quote as stored, which is the page's own text: markup resolved
+        // away and punctuation smartened, so it can be found again in the
+        // rendered page. It may not be the string that was passed in.
+        quote: written.note.quote,
+        line: written.note.line,
+        ...(await writeToken(spaceKey)),
+      });
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  }
+);
+
+server.registerTool(
+  "kb_resolve_agent_note",
+  {
+    title: "Resolve an Agent Note",
+    description:
+      "Take down one of your own notes by id — one you left that has become wrong, has been answered, or was about text that no longer exists. Only `agent` notes, the ones you wrote: a person's `task` or `remark` is not yours to clear with a tool call. A task is addressed by making the change it asks for AND deleting its `<!-- flux:note ... -->` comment in the same kb_update_page call, which is deliberately the only way to close one. kb_list_notes with kind: agent reports the ids. Resolving deletes the note outright; git keeps it.",
+    inputSchema: {
+      slug: z.string().describe("Page slug the note sits on."),
+      noteId: z.string().min(1).describe("The note's `id`, as reported by kb_list_notes."),
+      spaceInstructionsToken: instructionTokenSchema,
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ slug, noteId, spaceInstructionsToken }) => {
+    const refused = refuseInstructionsPath(slug);
+    if (refused) return refused;
+
+    const spaceKey = content.spaceKeyOf(slug);
+    const gate = await gateWrite(spaceKey, spaceInstructionsToken);
+    if (gate) return gate;
+
+    try {
+      const page = await content.loadRaw(slug);
+      if (!page) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
+      const { header, body } = splitFrontmatter(page.raw);
+      const written = resolveAgentNote(body, noteId);
+      if (!written.ok) return errorResult(written.error);
+
+      const mutation = await commitNoteWrite(slug, header, written.body, "Resolve note on");
+      if (!mutation) return errorResult(`Page not found: ${cleanSlug(slug) || "(home)"}`);
+      return textResult({
+        resolved: true,
+        ...mutation,
+        noteId: written.note.id,
+        quote: written.note.quote,
         ...(await writeToken(spaceKey)),
       });
     } catch (err) {
