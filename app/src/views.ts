@@ -3099,11 +3099,13 @@ const STYLES = `
   --highlight-bg:#fbff00; --highlight-bg-strong:#e9ed00; --highlight-fg:#3d4000;
   --highlight-pin:#9aa300; --highlight-border:#d8dd00;
   /* An agent note is green: the one kind the reader did not write, so it wants a
-     hue none of theirs uses. Tinted like a task rather than flat like a
-     highlight — the undiluted fill is what makes a highlighter read as one — and
-     the pin is a darkened lime, because #7eff29 on white is barely a dot. */
-  --agent-bg:#e8ffd6; --agent-bg-strong:#d6ffb8; --agent-fg:#2b4d00;
-  --agent-pin:#5cbf00; --agent-border:#b6f58a;
+     hue none of theirs uses. A cold green, well off the yellow of a highlight —
+     a lime sits between the two and reads as a weaker version of it. Carrying
+     more saturation than a task's or remark's tint is what then keeps it clear
+     of the remark's pale teal, which a cold green is otherwise walking towards.
+     The pin darkens, because the ink this is named for only works on black. */
+  --agent-bg:#a8ffc6; --agent-bg-strong:#7dffab; --agent-fg:#033b1b;
+  --agent-pin:#00c853; --agent-border:#4ee88a;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -3135,8 +3137,8 @@ const STYLES = `
   --task-pin:#a855f7; --task-border:#6d28d9;
   --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
   --highlight-pin:#e2e800; --highlight-border:#6f7400;
-  --agent-bg:#2b4a00; --agent-bg-strong:#3a6300; --agent-fg:#d4ff9e;
-  --agent-pin:#7eff29; --agent-border:#4a7a00;
+  --agent-bg:#054a24; --agent-bg-strong:#076b34; --agent-fg:#9dffc2;
+  --agent-pin:#00ff41; --agent-border:#0a8341;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -3170,8 +3172,8 @@ const STYLES = `
     --task-pin:#a855f7; --task-border:#6d28d9;
     --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
     --highlight-pin:#e2e800; --highlight-border:#6f7400;
-    --agent-bg:#2b4a00; --agent-bg-strong:#3a6300; --agent-fg:#d4ff9e;
-    --agent-pin:#7eff29; --agent-border:#4a7a00;
+    --agent-bg:#054a24; --agent-bg-strong:#076b34; --agent-fg:#9dffc2;
+    --agent-pin:#00ff41; --agent-border:#0a8341;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);

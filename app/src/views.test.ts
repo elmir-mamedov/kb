@@ -664,10 +664,10 @@ test("notes: an agent's note is green, and a reader can only resolve it", () => 
   ]) {
     assert.equal(html.split(token).length - 1, 3, token + " is not in all three theme blocks");
   }
-  // The vivid green is the pin on the dark page and a darkened one on the light,
-  // the same split the highlight's yellow already needs.
-  assert.equal(html.split("--agent-pin:#5cbf00").length - 1, 1);
-  assert.equal(html.split("--agent-pin:#7eff29").length - 1, 2);
+  // The green this is named for only reads on black, so it is the pin on the dark
+  // page and a darkened one on the light — the same split the yellow already needs.
+  assert.equal(html.split("--agent-pin:#00c853").length - 1, 1);
+  assert.equal(html.split("--agent-pin:#00ff41").length - 1, 2);
   assert.match(html, /\.note-mark\.is-agent,[^{]+\{\s*--note-bg:var\(--agent-bg\)/);
   // No .note-kind-option, because the switch never offers a kind nobody can
   // write — so the chip needs a name from somewhere other than KINDS.
