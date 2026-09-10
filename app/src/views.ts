@@ -2515,15 +2515,20 @@ const NOTES_SCRIPT = `
       block.classList.add("has-note");
       const kinds = present.map((id) => byId.get(id).kind);
       // One pin stands for every note on the block, so the loudest kind on it
-      // wins: a single task among remarks still means something is waiting, and
-      // a highlight only colours the pin when nothing else does.
+      // wins: a single task among remarks still means something is waiting, an
+      // agent note outranks a remark because it is something new said by whoever
+      // last changed the page, and a highlight only colours the pin when nothing
+      // else does.
       const loudest = kinds.includes("task")
         ? "task"
-        : kinds.includes("remark")
-          ? "remark"
-          : "highlight";
+        : kinds.includes("agent")
+          ? "agent"
+          : kinds.includes("remark")
+            ? "remark"
+            : "highlight";
       const pin = pinFor(block);
       pin.classList.toggle("is-task", loudest === "task");
+      pin.classList.toggle("is-agent", loudest === "agent");
       pin.classList.toggle("is-remark", loudest === "remark");
       pin.classList.toggle("is-highlight", loudest === "highlight");
       pin.setAttribute("aria-label", present.length + " note" + (present.length === 1 ? "" : "s"));
@@ -2550,10 +2555,16 @@ const NOTES_SCRIPT = `
     ["task", "Task", "Something an agent should change"],
   ];
 
+  /**
+   * What each kind is called on a card. Read from here rather than from KINDS,
+   * because that table is what the switch *offers* and an agent note is the one
+   * kind nobody can write: it needs a name without becoming an option.
+   */
+  const LABELS = { highlight: "Highlight", remark: "Remark", task: "Task", agent: "Agent" };
+
   /** A kind's label, falling back to Task the way the parser does. */
   function kindLabel(kind) {
-    const found = KINDS.find((option) => option[0] === kind);
-    return found ? found[1] : "Task";
+    return LABELS[kind] || "Task";
   }
 
   /** What the text box asks for, which is nothing at all for a highlight. */
@@ -2644,7 +2655,10 @@ const NOTES_SCRIPT = `
       row.appendChild(kind);
       const when = document.createElement("span");
       when.className = "note-when";
-      when.textContent = [relativeTime(note.at), note.by].filter(Boolean).join(" · ");
+      // The green chip already names an agent as the writer, so printing its
+      // by= line beside it would only say the same word twice.
+      const by = note.kind === "agent" ? "" : note.by;
+      when.textContent = [relativeTime(note.at), by].filter(Boolean).join(" · ");
       row.appendChild(when);
       return row;
     };
@@ -2714,9 +2728,14 @@ const NOTES_SCRIPT = `
         card.appendChild(body);
       }
 
-      const edit = actionButton("Edit", "secondary");
-      edit.addEventListener("click", (event) => swap(true, event));
-      actions.appendChild(edit);
+      // A note from an agent is the agent's own words: it can be taken down but
+      // not have words put in its mouth, so it gets no Edit. The route refuses
+      // one too — this only keeps the button from promising what it can't do.
+      if (note.kind !== "agent") {
+        const edit = actionButton("Edit", "secondary");
+        edit.addEventListener("click", (event) => swap(true, event));
+        actions.appendChild(edit);
+      }
 
       const resolve = actionButton("Resolve", "secondary");
       resolve.addEventListener("click", () => {
@@ -3079,6 +3098,12 @@ const STYLES = `
      search mark: the two now say "look here" in visibly different voices. */
   --highlight-bg:#fbff00; --highlight-bg-strong:#e9ed00; --highlight-fg:#3d4000;
   --highlight-pin:#9aa300; --highlight-border:#d8dd00;
+  /* An agent note is green: the one kind the reader did not write, so it wants a
+     hue none of theirs uses. Tinted like a task rather than flat like a
+     highlight — the undiluted fill is what makes a highlighter read as one — and
+     the pin is a darkened lime, because #7eff29 on white is barely a dot. */
+  --agent-bg:#e8ffd6; --agent-bg-strong:#d6ffb8; --agent-fg:#2b4d00;
+  --agent-pin:#5cbf00; --agent-border:#b6f58a;
   --focus-ring:#93c5fd; --focus-ring-soft:#bfdbfe;
   --sidebar-fade:rgba(247,248,250,0); --surface-hover-fade:rgba(238,240,243,0); --active-fade:rgba(231,239,255,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.08);
@@ -3110,6 +3135,8 @@ const STYLES = `
   --task-pin:#a855f7; --task-border:#6d28d9;
   --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
   --highlight-pin:#e2e800; --highlight-border:#6f7400;
+  --agent-bg:#2b4a00; --agent-bg-strong:#3a6300; --agent-fg:#d4ff9e;
+  --agent-pin:#7eff29; --agent-border:#4a7a00;
   --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
   --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
   --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -3143,6 +3170,8 @@ const STYLES = `
     --task-pin:#a855f7; --task-border:#6d28d9;
     --highlight-bg:#4a4d00; --highlight-bg-strong:#5f6300; --highlight-fg:#edf37a;
     --highlight-pin:#e2e800; --highlight-border:#6f7400;
+    --agent-bg:#2b4a00; --agent-bg-strong:#3a6300; --agent-fg:#d4ff9e;
+    --agent-pin:#7eff29; --agent-border:#4a7a00;
     --focus-ring:#388bfd; --focus-ring-soft:#1f6feb;
     --sidebar-fade:rgba(11,14,20,0); --surface-hover-fade:rgba(33,38,45,0); --active-fade:rgba(31,45,68,0);
     --shadow-sm:0 2px 8px rgba(0,0,0,.5);
@@ -3537,10 +3566,11 @@ body.dragging-page .space-current{
    lays out exactly as it did before this feature existed. The pin sits in the
    left padding of .content (40px, 20px on mobile) — hence the two offsets. */
 .prose [data-flux-notes]{position:relative}
-/* A task and a highlight each carry their own palette on the element, so every
-   rule below stays kind-agnostic and a remark keeps the teal it always had. Leaf
-   elements only: swapping the tokens on a container would leak into the Remark
-   button of the kind switch nested inside a card. */
+/* A task, a highlight and an agent note each carry their own palette on the
+   element, so every rule below stays kind-agnostic and a remark keeps the teal it
+   always had. Leaf elements only: swapping the tokens on a container would leak
+   into the Remark button of the kind switch nested inside a card. An agent note
+   has no .note-kind-option, because the switch never offers it. */
 .note-mark.is-task,.note-pin.is-task,.note-kind.is-task,.note-kind-option.is-task{
   --note-bg:var(--task-bg); --note-bg-strong:var(--task-bg-strong);
   --note-fg:var(--task-fg); --note-pin:var(--task-pin); --note-border:var(--task-border);
@@ -3550,6 +3580,10 @@ body.dragging-page .space-current{
   --note-bg:var(--highlight-bg); --note-bg-strong:var(--highlight-bg-strong);
   --note-fg:var(--highlight-fg); --note-pin:var(--highlight-pin);
   --note-border:var(--highlight-border);
+}
+.note-mark.is-agent,.note-pin.is-agent,.note-kind.is-agent{
+  --note-bg:var(--agent-bg); --note-bg-strong:var(--agent-bg-strong);
+  --note-fg:var(--agent-fg); --note-pin:var(--agent-pin); --note-border:var(--agent-border);
 }
 .prose mark.note-mark{
   background:var(--note-bg); color:var(--note-fg);

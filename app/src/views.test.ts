@@ -652,6 +652,38 @@ test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
   assert.match(html, /pin\.classList\.toggle\("is-highlight", loudest === "highlight"\)/);
 });
 
+test("notes: an agent's note is green, and a reader can only resolve it", () => {
+  const html = layout(pageView());
+  // Every theme block defines the palette; one missing it renders unstyled.
+  for (const token of [
+    "--agent-bg:",
+    "--agent-bg-strong:",
+    "--agent-fg:",
+    "--agent-pin:",
+    "--agent-border:",
+  ]) {
+    assert.equal(html.split(token).length - 1, 3, token + " is not in all three theme blocks");
+  }
+  // The vivid green is the pin on the dark page and a darkened one on the light,
+  // the same split the highlight's yellow already needs.
+  assert.equal(html.split("--agent-pin:#5cbf00").length - 1, 1);
+  assert.equal(html.split("--agent-pin:#7eff29").length - 1, 2);
+  assert.match(html, /\.note-mark\.is-agent,[^{]+\{\s*--note-bg:var\(--agent-bg\)/);
+  // No .note-kind-option, because the switch never offers a kind nobody can
+  // write — so the chip needs a name from somewhere other than KINDS.
+  assert.doesNotMatch(html, /\.note-kind-option\.is-agent/);
+  assert.match(html, /const LABELS = \{[^}]*agent: "Agent"/);
+  // The pin is coloured for it above a remark and below a task, and colouring it
+  // at all takes a fourth toggle — without one the pin falls back to the base
+  // token and an agent note reads as a remark.
+  assert.match(html, /kinds\.includes\("task"\)\s*\? "task"\s*: kinds\.includes\("agent"\)/);
+  assert.match(html, /pin\.classList\.toggle\("is-agent", loudest === "agent"\)/);
+  // Resolve and nothing else: an agent's note is the agent's own words.
+  assert.match(html, /if \(note\.kind !== "agent"\) \{\s*const edit = actionButton\("Edit"/);
+  // And the chip names the writer, so the byline does not say it twice.
+  assert.match(html, /const by = note\.kind === "agent" \? "" : note\.by;/);
+});
+
 test("notes: the kind switch gets its own row, so no kind is clipped", () => {
   const html = layout(pageView());
   // Three kinds beside Cancel and Save overflow the 320px panel, and .note-kinds
