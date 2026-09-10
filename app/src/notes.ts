@@ -25,8 +25,13 @@ import { randomBytes } from "node:crypto";
  * How a note should be treated by an agent reading the page. A `task` asks for a
  * change, a `remark` is context to respect — and a `highlight` asks for nothing
  * at all: it marks a phrase as worth remembering, so it usually has no text.
+ *
+ * An `agent` note runs the other way: it is something an agent left *for* the
+ * reader, an explanation of a page it just wrote or changed. A person can
+ * resolve one but never write or reword one, so a green note on a page is
+ * always something the agent itself actually said.
  */
-export type NoteKind = "task" | "remark" | "highlight";
+export type NoteKind = "task" | "remark" | "highlight" | "agent";
 
 export interface Note {
   /**
@@ -46,6 +51,15 @@ export interface Note {
   text: string;
   /** 0-based line in the body where the note's opening `<!--` sits. */
   line: number;
+}
+
+/**
+ * Whether a note came from an agent rather than a person. It lives next to the
+ * kind it tests so the literal sits in one place: the web editor refuses to
+ * rewrite one of these, and the MCP resolve tool refuses everything else.
+ */
+export function isAgentNote(note: { kind: NoteKind }): boolean {
+  return note.kind === "agent";
 }
 
 /** A note plus the line range it occupies, used by the splice helpers below. */
@@ -70,6 +84,15 @@ export function newNoteId(): string {
   return BigInt("0x" + randomBytes(5).toString("hex"))
     .toString(36)
     .padStart(8, "0");
+}
+
+/**
+ * The timestamp a note is written with. Seconds are plenty for something a
+ * person reads as "2h ago", and both writers — the web route and the MCP tool —
+ * have to agree on the shape or the same page ends up with two of them.
+ */
+export function noteStamp(now: Date = new Date()): string {
+  return now.toISOString().replace(/\.\d+Z$/, "Z");
 }
 
 /**
@@ -187,7 +210,7 @@ function scanNotes(body: string): ScannedNote[] {
         id: attrs.get("id") || `@${i}`,
         // Anything unrecognised (or absent) reads as a task: a note someone
         // wrote by hand without a kind is almost always an instruction.
-        kind: kind === "remark" || kind === "highlight" ? kind : "task",
+        kind: kind === "remark" || kind === "highlight" || kind === "agent" ? kind : "task",
         at: attrs.get("at") ?? "",
         by: attrs.get("by"),
         quote: quote || undefined,
@@ -257,6 +280,10 @@ export function insertNote(body: string, at: number, note: Omit<Note, "line">): 
  * A note written by hand without an `id=` is addressed by position, which is not
  * a durable handle; rewriting one stamps a real id on it so the next edit can
  * find it by name.
+ *
+ * `changes.kind` will take any kind, `agent` included. Keeping a person from
+ * retyping a note into an agent note is `noteKindOf`'s job, in the web route
+ * that calls this.
  */
 export function updateNote(
   body: string,

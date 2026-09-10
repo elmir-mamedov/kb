@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   formatNote,
   insertNote,
+  isAgentNote,
   newNoteId,
   normalizeQuote,
+  noteStamp,
   parseNotes,
   removeNote,
   splitFrontmatter,
@@ -437,4 +439,56 @@ test("tilde fences and fences with a longer closing rail are both respected", ()
   assert.deepEqual(parseNotes("```\n<!-- flux:note id=a kind=task\nx\n-->\n`````"), []);
   // An indented code block is already excluded by the four-space rule.
   assert.deepEqual(parseNotes("    <!-- flux:note id=a kind=task\n    x\n    -->"), []);
+});
+
+// --- notes written by an agent -----------------------------------------------
+
+test("an agent note round-trips, kind and byline intact", () => {
+  const parsed = roundTrip(
+    note({ kind: "agent", by: "agent", quote: "the rolling restart script", text: "Renamed." })
+  );
+  assert.equal(parsed.kind, "agent");
+  assert.equal(parsed.by, "agent");
+  assert.equal(parsed.quote, "the rolling restart script");
+  assert.ok(isAgentNote(parsed));
+  assert.ok(!isAgentNote(note({ kind: "task" })));
+});
+
+test("kind=agent parses as itself while a typo still reads as a task", () => {
+  const body = [
+    "<!-- flux:note id=aaa kind=agent",
+    "> the phrase",
+    "",
+    "Why this reads the way it does.",
+    "-->",
+    "Annotated paragraph.",
+    "",
+    "<!-- flux:note id=bbb kind=agnet",
+    "Do the thing.",
+    "-->",
+    "Another paragraph.",
+  ].join("\n");
+  assert.deepEqual(
+    parseNotes(body).map((n) => [n.id, n.kind]),
+    [
+      ["aaa", "agent"],
+      ["bbb", "task"],
+    ]
+  );
+});
+
+test("an agent note is removed and rewritten like any other", () => {
+  const body = "First.\n\n" + formatNote(note({ kind: "agent", by: "agent" })) + "\nSecond.\n";
+  // A rewrite that names no kind keeps the one the note has, so nothing can
+  // launder an agent note into a person's by editing only its text.
+  const edited = updateNote(body, "n7k2m4x8", { text: "Reworded." });
+  assert.equal(parseNotes(edited!)[0].kind, "agent");
+  assert.equal(parseNotes(edited!)[0].text, "Reworded.");
+  assert.deepEqual(parseNotes(removeNote(body, "n7k2m4x8")!), []);
+});
+
+test("noteStamp drops sub-second precision and keeps the Z", () => {
+  assert.equal(noteStamp(new Date("2026-08-10T09:12:04.517Z")), "2026-08-10T09:12:04Z");
+  // Both note writers use it, so a page never ends up carrying two shapes.
+  assert.match(noteStamp(), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 });

@@ -5,7 +5,7 @@ import type StateBlock from "markdown-it/lib/rules_block/state_block.mjs";
 import type StateCore from "markdown-it/lib/rules_core/state_core.mjs";
 import hljs from "highlight.js";
 import { createHash } from "node:crypto";
-import { parseNotes } from "./notes.js";
+import { normalizeQuote, parseNotes } from "./notes.js";
 
 /**
  * Resolve a [[wiki-link]] target against the page it appears on.
@@ -687,13 +687,17 @@ function stripSectionPin(inline: Token): string | null {
  * The slug is taken from the raw source, but the rail and the MCP payload show
  * this text to a person — raw source would put literal backticks and asterisks
  * in front of them, and would join a setext heading's two lines with a newline.
+ *
+ * `imageAlt` is what a heading wants and `locateQuote` does not: alt text names
+ * an image for a heading that is one, but it reaches the browser as an
+ * attribute, so it is not text a note's quote could ever be highlighted in.
  */
-function inlineText(token: Token): string {
+function inlineText(token: Token, imageAlt = true): string {
   let out = "";
   for (const child of token.children ?? []) {
     if (child.type === "text" || child.type === "code_inline") out += child.content;
     else if (child.type === "softbreak" || child.type === "hardbreak") out += " ";
-    else if (child.type === "image") out += child.content; // alt text
+    else if (child.type === "image" && imageAlt) out += child.content; // alt text
   }
   return out.replace(/\s+/g, " ").trim();
 }
@@ -760,6 +764,102 @@ export function sourceBlocks(body: string): SourceBlock[] {
     hash: blockHash(sourceOf(lines, token.map!, notes)),
   }));
 }
+
+/** Where a quoted phrase sits in a body, or why it could not be pinned down. */
+export type QuoteLocation =
+  | { ok: true; line: number; quote: string }
+  | { ok: false; reason: "empty" | "not-found" }
+  | { ok: false; reason: "ambiguous"; blocks: number };
+
+/**
+ * Fold the punctuation the typographer rewrites but a writer types plainly, so a
+ * quote copied with an ASCII apostrophe still matches the curly one on the page.
+ *
+ * Length-preserving on purpose: the match offset is used to slice the block's own
+ * text, and a fold that changed the length would slice the wrong window. That
+ * rules out dashes and ellipses — `--` is two characters and `\u2013` is one — but
+ * those need no folding here, because `parseInline` converts them on the quote's
+ * side exactly as `parse` did on the page's.
+ */
+function foldPunctuation(value: string): string {
+  return value.replace(/[\u2018\u2019\u201a\u201b]/g, "'").replace(/[\u201c-\u201f]/g, '"');
+}
+
+/**
+ * Every top-level block of a body, with the text a reader sees in it.
+ *
+ * This has to be the string the *browser* would build: `markQuote` indexes the
+ * block's text nodes with runs of whitespace collapsed, which is what joining
+ * each inline token's text with one space reproduces — markdown-it emits a
+ * newline between `</li>` and `<li>`, and the DOM collapses it to a space.
+ *
+ * Blocks come from `anchorTokens`, the same list `sourceBlocks` reports, so a
+ * line found here always names a block the note machinery can anchor to. A note
+ * comment contributes nothing: its token carries a map but no content.
+ */
+function blockTexts(md: MarkdownIt, body: string): { line: number; text: string }[] {
+  const src = body.replace(/\r\n?/g, "\n");
+  const tokens = md.parse(src, {});
+  const anchors = new Set(anchorTokens(tokens));
+  const blocks: { line: number; parts: string[] }[] = [];
+
+  for (const token of tokens) {
+    if (anchors.has(token)) blocks.push({ line: token.map![0], parts: [] });
+    const current = blocks[blocks.length - 1];
+    if (!current) continue;
+    if (token.type === "inline") {
+      current.parts.push(inlineText(token, false));
+    } else if (token.type === "fence" || token.type === "code_block") {
+      // A mermaid fence's text belongs to the diagram, and `markQuote` steps
+      // around those nodes, so a quote there could only ever read as drifted.
+      if (token.info.trim().split(/\s+/)[0] !== "mermaid") current.parts.push(token.content);
+    }
+  }
+
+  return blocks.map((block) => ({ line: block.line, text: normalizeQuote(block.parts.join(" ")) }));
+}
+
+/**
+ * Find the block a quoted phrase sits in, so a note can be anchored to it.
+ *
+ * The browser reports the block it was looking at by line and fingerprint; an
+ * agent writing over MCP has neither, only the words. So both sides go through
+ * the real parser here — the body through `parse`, the quote through
+ * `parseInline` — and markup, entities and the typographer resolve identically
+ * on each: `**the rolling restart** script` finds the block that reads "the
+ * rolling restart script".
+ *
+ * The quote that comes back is sliced out of the block's own text rather than
+ * echoed from the argument, so what gets stored is a verbatim substring of what
+ * `markQuote` will search: a note written this way cannot be born drifted.
+ *
+ * A phrase found in more than one block is refused rather than resolved to the
+ * first of them. A note on the wrong paragraph is worse than a refusal the
+ * caller can do something about.
+ */
+export function locateQuote(body: string, quote: string): QuoteLocation {
+  // One instance, kept for the same reason `extractSections` keeps one: a fresh
+  // MarkdownIt drags the whole highlight.js wiring up with it, and parsing is
+  // stateless, so it is safe to reuse across bodies.
+  quoteRenderer ??= createRenderer(() => undefined);
+  const inline = quoteRenderer.parseInline(quote.replace(/\r\n?/g, "\n"), {})[0];
+  const want = inline ? inlineText(inline, false) : "";
+  // Empty covers a quote that was only markup ("****"), which has no words to
+  // find even though the caller sent characters.
+  if (!want) return { ok: false, reason: "empty" };
+
+  const folded = foldPunctuation(want);
+  const hits = blockTexts(quoteRenderer, body).filter((block) =>
+    foldPunctuation(block.text).includes(folded)
+  );
+  if (!hits.length) return { ok: false, reason: "not-found" };
+  if (hits.length > 1) return { ok: false, reason: "ambiguous", blocks: hits.length };
+
+  const at = foldPunctuation(hits[0].text).indexOf(folded);
+  return { ok: true, line: hits[0].line, quote: hits[0].text.slice(at, at + want.length) };
+}
+
+let quoteRenderer: MarkdownIt | undefined;
 
 /**
  * Create a markdown renderer.

@@ -67,6 +67,39 @@ async function seed(dir: string): Promise<Content> {
   return content;
 }
 
+test("collectNotes filters an agent's notes out of a person's work", async () => {
+  const kb: TempKb = await makeTempKb();
+  try {
+    const content = new Content(kb.dir);
+    await content.createSpace("Docs");
+    await content.createPage(
+      "docs",
+      "Deploy",
+      [
+        noteComment("aaa11111", "task", "2026-08-02T10:00:00Z", "the workers", "restart them"),
+        noteComment("bbb22222", "agent", "2026-08-03T10:00:00Z", "the workers", "renamed in 08"),
+        "Restart the workers.",
+      ].join("\n")
+    );
+
+    // The dashboard and kb_list_notes share this path, so the two have to be
+    // separable: an agent's note is not work a person asked for.
+    const tasks = await collectNotes(content, "live", { kind: "task" });
+    assert.deepEqual(
+      tasks.map((note) => note.id),
+      ["aaa11111"]
+    );
+    const agent = await collectNotes(content, "live", { kind: "agent" });
+    assert.deepEqual(
+      agent.map((note) => note.id),
+      ["bbb22222"]
+    );
+    assert.equal((await collectNotes(content, "live")).length, 2);
+  } finally {
+    await kb.cleanup();
+  }
+});
+
 test("collectNotes scoped to a space returns only that space's notes", async () => {
   const kb: TempKb = await makeTempKb();
   try {

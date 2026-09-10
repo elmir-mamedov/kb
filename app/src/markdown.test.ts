@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRenderer, extractSections, headingSlug, sourceBlocks } from "./markdown.js";
+import { createRenderer, extractSections, headingSlug, locateQuote, sourceBlocks } from "./markdown.js";
 
 /** Render Markdown with a renderer scoped to a representative page slug. */
 const render = (src: string) =>
@@ -492,4 +492,123 @@ test("rendering parks the same sections on env that extractSections reports", ()
   const env: Record<string, unknown> = {};
   createRenderer(() => undefined, "flux/page").render(body, env);
   assert.deepEqual(env.fluxSections, extractSections(body));
+});
+
+// --- locating a quote --------------------------------------------------------
+
+/** A page with one of every shape a quote can be aimed at. */
+const quotable = [
+  "Run the **rolling restart** script -- see `deploy.sh` for the flags.", // 0
+  "",
+  "## Rollback steps", // 2
+  "",
+  "- drain the node", // 4
+  "- then [restart it](https://example.com/restart)",
+  "",
+  noteComment("aaa11111", "document the drain timeout", "drain the node"), // 7
+  "Restart it by hand only when the script refuses.", // 12
+  "",
+  "```sh", // 14
+  "kubectl drain node-1",
+  "```",
+  "",
+  "```mermaid", // 18
+  "flowchart LR",
+  "  a --> b",
+  "```",
+].join("\n");
+
+/** The line locateQuote picked, or the reason it refused. */
+const locate = (quote: string, body = quotable) => {
+  const found = locateQuote(body, quote);
+  return found.ok ? found.line : found.reason;
+};
+
+test("locateQuote finds a plain phrase and reports its block's line", () => {
+  assert.equal(locate("Rollback steps"), 2);
+  assert.equal(locate("Restart it by hand"), 12);
+  assert.equal(locate("kubectl drain node-1"), 14);
+});
+
+test("locateQuote reads through markup, from either side of it", () => {
+  // The agent reads raw Markdown and the browser searches rendered text, so both
+  // spellings of the same phrase have to land on the same block.
+  assert.equal(locate("the rolling restart script"), 0);
+  assert.equal(locate("the **rolling restart** script"), 0);
+  assert.equal(locate("see `deploy.sh` for the flags"), 0);
+  assert.equal(locate("then restart it"), 4); // link text, not the URL
+});
+
+test("locateQuote stores the page's text, not the caller's spelling of it", () => {
+  // What comes back is what `markQuote` will look for in the rendered page, so
+  // the markup is gone and the typographer's punctuation is in.
+  const found = locateQuote(quotable, "script -- see `deploy.sh`");
+  assert.equal(found.ok && found.quote, "script \u2013 see deploy.sh");
+});
+
+test("locateQuote matches an ASCII quotation mark against a smartened one", () => {
+  const body = 'He said "yes" to the rollback.\n';
+  const found = locateQuote(body, 'said "yes');
+  // Matched through the fold, but stored in the form the page actually renders.
+  assert.equal(found.ok && found.quote, "said \u201cyes");
+});
+
+test("locateQuote refuses a phrase that sits in more than one block", () => {
+  const body = "Restart the workers.\n\nSomething else.\n\nRestart the workers.\n";
+  const found = locateQuote(body, "Restart the workers");
+  assert.equal(found.ok, false);
+  assert.equal(found.ok === false && found.reason, "ambiguous");
+  assert.equal(found.ok === false && found.reason === "ambiguous" && found.blocks, 2);
+});
+
+test("locateQuote takes a phrase repeated inside one block, which is one place", () => {
+  // The anchor is that block either way, and the browser marks the first hit —
+  // exactly what a person's note on the same words already does.
+  const body = "The script calls the script twice.\n";
+  assert.equal(locate("the script", body), 0);
+});
+
+test("locateQuote refuses a phrase spanning two blocks, and says nothing found", () => {
+  assert.equal(locate("then restart it Restart it by hand"), "not-found");
+});
+
+test("locateQuote reads across the paragraphs inside one block", () => {
+  // Two paragraphs in one list item are still one block, and the browser
+  // searches the whole <ul> — so a quote across them is findable.
+  const body = "- item one\n\n  second paragraph of it\n";
+  assert.equal(locate("item one second paragraph of it", body), 0);
+});
+
+test("locateQuote cannot see a note's own text, which is not on the page", () => {
+  assert.equal(locate("document the drain timeout"), "not-found");
+});
+
+test("locateQuote refuses a quote inside a mermaid fence", () => {
+  // Mermaid owns those text nodes and `markQuote` steps around them, so a note
+  // anchored there could only ever read as drifted.
+  assert.equal(locate("flowchart LR"), "not-found");
+});
+
+test("locateQuote refuses a quote with no words in it", () => {
+  assert.equal(locate(""), "empty");
+  assert.equal(locate("   \n  "), "empty");
+  // An image is an attribute by the time it reaches the reader, not text.
+  assert.equal(locate("![a diagram](x.png)", "![a diagram](x.png)\n"), "empty");
+});
+
+test("locateQuote only ever names a line sourceBlocks also reports", () => {
+  const lines = new Set(sourceBlocks(quotable).map((block) => block.line));
+  for (const quote of ["Rollback steps", "the rolling restart script", "drain the node"]) {
+    const found = locateQuote(quotable, quote);
+    assert.equal(found.ok, true);
+    assert.ok(found.ok && lines.has(found.line), `line ${found.ok && found.line} is not a block`);
+  }
+});
+
+test("locateQuote is unmoved by a note already sitting above the block", () => {
+  const plain = "First paragraph.\n\nSecond paragraph.\n";
+  const annotated = "First paragraph.\n\n" + noteComment("bbb", "Fix.") + "\nSecond paragraph.\n";
+  // The block moved down, and the answer moves with it rather than staying put.
+  assert.equal(locate("Second paragraph", plain), 2);
+  assert.equal(locate("Second paragraph", annotated), sourceBlocks(annotated)[1].line);
 });
