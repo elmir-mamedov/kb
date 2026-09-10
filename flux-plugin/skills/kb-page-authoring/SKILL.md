@@ -29,6 +29,7 @@ Pick the location deliberately: every page lives inside a **space** (the first s
 
 - **New page → `kb_create_page`.** It's single-shot: pass the `title` and the full Markdown `body` in one call. Don't create an empty page and then update it — write the complete body the first time.
 - **Existing page → `kb_update_page`.** Read the current source first with `kb_get_page` (`format: raw`) so you preserve its frontmatter and don't clobber content, then send the full replacement Markdown (valid frontmatter with a `title` is required).
+- **A reason the diff won't carry → `kb_add_agent_note`.** When you change an existing page and the *why* isn't visible in the result — a figure you corrected, a claim you couldn't verify, one of two readings you had to pick — leave a note on that passage saying so. Quote the words as a reader sees them, not as the source spells them. One note per thing genuinely worth saying, not one per paragraph: the reader resolves each one after reading it, and a page fenced in green marks is one nobody reads.
 
 Follow the KB's conventions so the page fits in:
 
