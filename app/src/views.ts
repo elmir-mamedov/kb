@@ -1460,9 +1460,13 @@ const TOC_SCRIPT = `
 
   function update() {
     queued = false;
-    // Matches the headings' scroll-margin-top, so the entry lights at the
-    // moment its heading settles where a #link would have put it.
-    const line = 28;
+    // The headings' scroll-margin-top, so the entry lights at the moment its
+    // heading settles where a #link would have put it — plus a pixel of slack.
+    // A jump to #section scrolls to the heading's offset minus that margin, and
+    // the browser snaps the result to a whole pixel: a heading sitting on a
+    // fraction then comes to rest a fraction *below* the line, and without the
+    // slack the entry above it wins the section the reader just clicked.
+    const line = 28 + 1;
     let found = null;
     for (const entry of entries) {
       if (entry.heading.getBoundingClientRect().top <= line) found = entry;

@@ -1119,6 +1119,16 @@ test("the scroll spy looks headings up by id, never by selector", () => {
   assert.doesNotMatch(html, /querySelector\("#"/);
 });
 
+test("the scroll spy's probe line clears the scroll margin by a pixel", () => {
+  // A jump to #section scrolls to the heading's offset minus its 28px margin and
+  // the browser snaps that to a whole pixel, so a heading on a fractional offset
+  // settles a fraction *below* 28 — measured at 27.5–28.5 across one page's
+  // headings. Probing at exactly 28 hands the highlight to the section above the
+  // one the reader just clicked, on roughly half of them.
+  const html = layout(pageView({ sections: sections() }));
+  assert.match(html, /const line = 28 \+ 1;/);
+});
+
 test("headings get a scroll margin, and smooth scrolling stays off", () => {
   const html = layout(pageView());
   assert.match(html, /\.prose :is\(h1,h2,h3,h4,h5,h6\)\{scroll-margin-top:28px\}/);
