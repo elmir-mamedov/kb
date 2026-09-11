@@ -1,8 +1,7 @@
 import type { PageNode, SpaceInfo } from "./content.js";
 import type { DiffLine } from "./diff.js";
 import { relativeAge, type NotePageGroup, type NoteSummary } from "./note-index.js";
-import type { Section } from "./markdown.js";
-import type { Note } from "./notes.js";
+import type { RenderedNote, Section } from "./markdown.js";
 
 export function escapeHtml(s: string): string {
   return s
@@ -161,7 +160,7 @@ export interface PageView {
    */
   sections?: Section[];
   /** Inline notes saved on this page; the renderer has already anchored them. */
-  notes?: Note[];
+  notes?: RenderedNote[];
   updated?: string | null;
   canEdit?: boolean;
   isArchived?: boolean;
@@ -2637,6 +2636,32 @@ const NOTES_SCRIPT = `
   }
 
   /**
+   * A note's words, with the links in them as real links.
+   *
+   * The server ships a note that has links as segments — runs of plain text and
+   * runs that are one — with every [[wiki-link]] already resolved to where it
+   * points now. A note without any ships none and is drawn as one string. Both
+   * paths reach the DOM through createElement and text nodes, so a note can
+   * carry a link without being able to carry markup.
+   */
+  function paintNoteText(target, note) {
+    if (!note.segments) {
+      target.textContent = note.text;
+      return;
+    }
+    for (const segment of note.segments) {
+      if (!segment.href) {
+        target.appendChild(document.createTextNode(segment.text));
+        continue;
+      }
+      const link = document.createElement("a");
+      link.href = segment.href;
+      link.textContent = segment.text;
+      target.appendChild(link);
+    }
+  }
+
+  /**
    * One note in the popover, drawn either for reading or for editing its text
    * and kind in place. Both modes come from the same function so the head —
    * kind, age, author — is identical either way and only the part below it
@@ -2724,7 +2749,7 @@ const NOTES_SCRIPT = `
       if (note.text) {
         const body = document.createElement("div");
         body.className = "note-text";
-        body.textContent = note.text;
+        paintNoteText(body, note);
         card.appendChild(body);
       }
 
@@ -3621,6 +3646,9 @@ body.dragging-page .space-current{
 }
 /* pre-wrap so a multi-line note keeps the shape its author gave it. */
 .note-text{font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere}
+/* A link in a note is underlined the way a [[wiki-link]] is in the prose: in a
+   card this small, colour alone is thin evidence that a phrase is clickable. */
+.note-text a{border-bottom:1px dotted var(--accent)}
 .note-input{
   width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
   background:var(--bg); color:var(--fg); font:inherit; font-size:14px; resize:vertical;

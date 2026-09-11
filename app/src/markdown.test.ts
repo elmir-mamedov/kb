@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRenderer, extractSections, headingSlug, locateQuote, sourceBlocks } from "./markdown.js";
+import {
+  createRenderer,
+  extractSections,
+  headingSlug,
+  locateQuote,
+  noteSegments,
+  sourceBlocks,
+} from "./markdown.js";
 
 /** Render Markdown with a renderer scoped to a representative page slug. */
 const render = (src: string) =>
@@ -611,4 +618,68 @@ test("locateQuote is unmoved by a note already sitting above the block", () => {
   // The block moved down, and the answer moves with it rather than staying put.
   assert.equal(locate("Second paragraph", plain), 2);
   assert.equal(locate("Second paragraph", annotated), sourceBlocks(annotated)[1].line);
+});
+
+/** A renderer with one id-addressable page, for the note-segment tests below. */
+const noteRenderer = () =>
+  createRenderer(
+    (slug) => (slug === "data/fdt-230" ? "FDT-230" : undefined),
+    "data/pipedrive",
+    (id) => (id === "2ikrbnpzudb7e" ? "data/fdt-230" : undefined)
+  );
+
+test("a note without a link is one plain segment", () => {
+  const segments = noteSegments(noteRenderer(), "Overtaken by events.");
+  assert.deepEqual(segments, [{ text: "Overtaken by events." }]);
+});
+
+test("a note's [[id:…]] link becomes a segment pointing at the live slug", () => {
+  const segments = noteSegments(
+    noteRenderer(),
+    "Answered by [[id:2ikrbnpzudb7e|FDT-230]] on the 11th."
+  );
+  assert.deepEqual(segments, [
+    { text: "Answered by " },
+    { text: "FDT-230", href: "/data/fdt-230" },
+    { text: " on the 11th." },
+  ]);
+});
+
+test("a note's [[id:…#anchor]] link keeps the section it points at", () => {
+  const segments = noteSegments(noteRenderer(), "[[id:2ikrbnpzudb7e#the-inventory|§ The inventory]]");
+  assert.deepEqual(segments, [
+    { text: "§ The inventory", href: "/data/fdt-230#the-inventory" },
+  ]);
+});
+
+test("a note's Markdown link and bare URL both become link segments", () => {
+  const segments = noteSegments(
+    noteRenderer(),
+    "[rejected](https://example.test/browse/FDT-130) — see https://example.test/docs"
+  );
+  assert.deepEqual(segments, [
+    { text: "rejected", href: "https://example.test/browse/FDT-130" },
+    { text: " — see " },
+    { text: "https://example.test/docs", href: "https://example.test/docs" },
+  ]);
+});
+
+test("a note's portable _assets/ link is scoped to its own space", () => {
+  const segments = noteSegments(noteRenderer(), "[the export](_assets/budget.pdf)", "data");
+  assert.deepEqual(segments, [{ text: "the export", href: "/data/_assets/budget.pdf" }]);
+});
+
+test("a note's line breaks survive segmenting, and its markup does not", () => {
+  const segments = noteSegments(noteRenderer(), "**Closed** on the 11th.\n\nSee `raw_pipedrive`.");
+  // pre-wrap draws the blank line, so the shape the author gave the note holds.
+  assert.deepEqual(segments, [{ text: "Closed on the 11th.\n\nSee raw_pipedrive." }]);
+});
+
+test("an unresolvable [[id:…]] in a note is still a segment, not swallowed", () => {
+  const segments = noteSegments(noteRenderer(), "See [[id:ghost|the missing page]].");
+  assert.deepEqual(segments, [
+    { text: "See " },
+    { text: "the missing page", href: "/id:ghost" },
+    { text: "." },
+  ]);
 });

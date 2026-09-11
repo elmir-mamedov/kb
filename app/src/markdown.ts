@@ -5,7 +5,7 @@ import type StateBlock from "markdown-it/lib/rules_block/state_block.mjs";
 import type StateCore from "markdown-it/lib/rules_core/state_core.mjs";
 import hljs from "highlight.js";
 import { createHash } from "node:crypto";
-import { normalizeQuote, parseNotes } from "./notes.js";
+import { normalizeQuote, parseNotes, type Note } from "./notes.js";
 
 /**
  * Resolve a [[wiki-link]] target against the page it appears on.
@@ -1039,4 +1039,71 @@ export function createRenderer(
   });
 
   return md;
+}
+
+/** One run of a note's words: plain text, or text that stands for a link. */
+export interface NoteSegment {
+  text: string;
+  /** Set when this run is a link, already resolved to the URL it points at. */
+  href?: string;
+}
+
+/** A note as a page ships it: what was stored, plus its text cut into segments. */
+export interface RenderedNote extends Note {
+  /**
+   * Present only when the note's text actually contains a link — a note without
+   * one is drawn from `text` and would gain nothing but payload from a
+   * single-element list.
+   */
+  segments?: NoteSegment[];
+}
+
+/**
+ * Cut a note's text into plain runs and link runs, so the browser can draw the
+ * links in it as links.
+ *
+ * A note card is built out of `createElement` and text nodes and never
+ * `innerHTML`, because a note's words come from a file a person or an agent can
+ * write anything into. That rules out shipping rendered HTML, so the parsing
+ * happens here and only the pieces travel: the same inline pass the prose gets —
+ * which is what resolves `[[id:…]]` to the page's live slug, a `[text](url)`
+ * link to its target and a bare URL to a link at all — flattened to the one
+ * thing a card needs. Emphasis and code spans survive as their own text; a
+ * popover is not the place to reproduce the page's typography.
+ *
+ * `spaceKey` scopes a portable `_assets/…` link the way the prose does. The
+ * prose rewrite runs inside the renderer, and these tokens never reach it.
+ */
+export function noteSegments(md: MarkdownIt, text: string, spaceKey = ""): NoteSegment[] {
+  const segments: NoteSegment[] = [];
+  let href: string | undefined;
+  let buffer = "";
+
+  const flush = () => {
+    if (buffer) segments.push(href === undefined ? { text: buffer } : { text: buffer, href });
+    buffer = "";
+  };
+
+  for (const token of md.parseInline(text, {})[0]?.children ?? []) {
+    if (token.type === "link_open") {
+      flush();
+      // markdown-it has already refused a `javascript:` target, so what comes
+      // out of here is as safe to put on an <a> as the prose's own links.
+      const target = token.attrGet("href");
+      href = target === null ? undefined : rewriteAssetUrl(target, spaceKey);
+    } else if (token.type === "link_close") {
+      flush();
+      href = undefined;
+    } else if (token.type === "text" || token.type === "code_inline") {
+      buffer += token.content;
+    } else if (token.type === "softbreak" || token.type === "hardbreak") {
+      // The card renders with `pre-wrap`, so the shape the author gave the note
+      // is kept rather than collapsed the way a heading's text is.
+      buffer += "\n";
+    } else if (token.type === "image") {
+      buffer += token.content; // alt text
+    }
+  }
+  flush();
+  return segments;
 }

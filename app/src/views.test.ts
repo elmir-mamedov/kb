@@ -577,6 +577,36 @@ test("notes: highlights are built as nodes, never assigned as HTML", () => {
   assert.doesNotMatch(html, /innerHTML/);
 });
 
+test("notes: a link in a note's text is drawn as an anchor, still without HTML", () => {
+  const html = layout(
+    pageView({
+      notes: [
+        {
+          id: "d1ggvluu",
+          kind: "agent",
+          at: "2026-09-11T11:36:25Z",
+          by: "agent",
+          text: "See FDT-230.",
+          segments: [{ text: "See " }, { text: "FDT-230", href: "/data/fdt-230" }],
+          line: 4,
+        },
+      ],
+    })
+  );
+  // The segments ride along in the payload the client reads.
+  assert.match(html, /&quot;href&quot;:&quot;\/data\/fdt-230&quot;/);
+  // And are put on a real anchor, node by node, never as markup.
+  assert.match(html, /link\.href = segment\.href/);
+  assert.match(html, /link\.textContent = segment\.text/);
+  assert.match(html, /createTextNode\(segment\.text\)/);
+  assert.doesNotMatch(html, /innerHTML/);
+});
+
+test("notes: a note with no links falls back to its plain text", () => {
+  const html = layout(pageView());
+  assert.match(html, /if \(!note\.segments\) \{\n\s*target\.textContent = note\.text;/);
+});
+
 test("notes: the composer keeps the selection alive across its own mousedown", () => {
   const html = layout(pageView());
   // Without this the button collapses the selection before the click fires.

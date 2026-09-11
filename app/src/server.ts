@@ -21,7 +21,7 @@ import {
 import { makeGit } from "./git.js";
 import { envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
-import { createRenderer, sourceBlocks, type Section } from "./markdown.js";
+import { createRenderer, noteSegments, sourceBlocks, type Section } from "./markdown.js";
 import { collectNotes, groupNotesByPage, summarizeNotes } from "./note-index.js";
 import {
   insertNote,
@@ -451,8 +451,14 @@ async function renderPage(
   const contentHtml = md.render(page.body, env);
   const updated = await gitUpdated(page.fsPath);
   // The renderer stamps each note's id onto the block it belongs to; the client
-  // needs the notes themselves to draw them.
-  const notes = parseNotes(page.body);
+  // needs the notes themselves to draw them. A note's own words can carry links
+  // — a wiki-link to the page that answers it is the common one — so they are
+  // resolved here, through the page's own renderer, and shipped as segments the
+  // client can turn into anchors without ever handling markup.
+  const notes = parseNotes(page.body).map((note) => {
+    const segments = noteSegments(md, note.text, spaceKey);
+    return segments.some((segment) => segment.href) ? { ...note, segments } : note;
+  });
   // The rail lists h2 and h3. Deeper headings are still linkable — they get an
   // id and a copy affordance like every other — but listing them turns the rail
   // into a second copy of the page. An h1 in the body just repeats the title
