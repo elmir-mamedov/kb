@@ -6,6 +6,7 @@ TypeScript + Fastify. No build step — TypeScript runs directly via `tsx`.
 ## Run
 
 ```bash
+cp ../.env.example ../.env   # fill in the AUTH_* trio; the server exits without it
 cd app
 npm install
 npm run dev      # http://localhost:4000, auto-reloads on file changes
