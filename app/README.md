@@ -12,9 +12,13 @@ npm run dev      # http://localhost:4000, auto-reloads on file changes
 npm run mcp      # stdio MCP server for local agent/client integrations
 ```
 
-It binds to `localhost` only, so nothing outside this machine can reach it. To
-share it with the team on your LAN, start it with `HOST=0.0.0.0` and they reach
-it at `http://<your-machine-ip>:4000`.
+It binds to `localhost` only, so nothing outside this machine can reach it.
+Keep it that way. Sign-in is a single static username/password with no rate
+limiting and the session cookie is not marked `Secure`, so binding a wider
+interface puts an unthrottled login form on the network in cleartext. To share
+a knowledge base with the team, give each person their own copy and let the
+`kb/` space repos sync through their own git remotes (`KB_SYNC=1`) rather than
+pointing everyone at one exposed process.
 
 ## Configuration (env vars)
 
@@ -22,7 +26,7 @@ it at `http://<your-machine-ip>:4000`.
 |--------------|----------------|------------------------------------------|
 | `KB_DIR`     | `../kb`        | Path to the content folder.              |
 | `PORT`       | `4000`         | Port to listen on.                       |
-| `HOST`       | `localhost`    | Bind address (this machine only; `0.0.0.0` = LAN-visible). |
+| `HOST`       | `localhost`    | Bind address. Leave it — a wider bind exposes the login form (see Run). |
 | `SITE_TITLE` | `Knowledge Base` | Name shown in the sidebar/title.       |
 | `AUTH_USERNAME` | required   | Username for browser sign-in.            |
 | `AUTH_PASSWORD` | required   | Password for browser sign-in.            |
