@@ -7,7 +7,7 @@ import { makeSink } from "./sink.js";
 import { SCHEMA_VERSION, type HarvestEvent } from "./event-schema.js";
 
 async function tempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "flux-harvest-test-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "kb25-harvest-test-"));
 }
 
 const sampleEvent: HarvestEvent = {

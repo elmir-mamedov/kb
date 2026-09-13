@@ -60,12 +60,12 @@ test("a highlight round-trips as a quote with no text at all", () => {
 
 test("an unrecognised kind still reads as a task", () => {
   const body = [
-    "<!-- flux:note id=aaa kind=highlight",
+    "<!-- kb25:note id=aaa kind=highlight",
     "> marked phrase",
     "-->",
     "Annotated paragraph.",
     "",
-    "<!-- flux:note id=bbb kind=nonsense",
+    "<!-- kb25:note id=bbb kind=nonsense",
     "Do the thing.",
     "-->",
     "Another paragraph.",
@@ -119,14 +119,14 @@ test("notes are found in document order with their body line numbers", () => {
   const body = [
     "Intro paragraph.",
     "",
-    "<!-- flux:note id=aaa kind=task",
+    "<!-- kb25:note id=aaa kind=task",
     "> first phrase",
     "",
     "Fix this.",
     "-->",
     "Annotated paragraph.",
     "",
-    "<!-- flux:note id=bbb kind=remark",
+    "<!-- kb25:note id=bbb kind=remark",
     "Just noting.",
     "-->",
     "Another paragraph.",
@@ -159,20 +159,20 @@ test("two notes stacked on the same block are both found", () => {
 });
 
 test("an unterminated note comment is ignored rather than swallowing the page", () => {
-  const body = "<!-- flux:note id=aaa kind=task\nNo terminator here.\n\nReal content.";
+  const body = "<!-- kb25:note id=aaa kind=task\nNo terminator here.\n\nReal content.";
   assert.deepEqual(parseNotes(body), []);
   assert.equal(stripNotes(body), body);
 });
 
 test("a single-line note comment parses with empty text", () => {
-  const notes = parseNotes("<!-- flux:note id=aaa kind=remark -->\nParagraph.");
+  const notes = parseNotes("<!-- kb25:note id=aaa kind=remark -->\nParagraph.");
   assert.equal(notes.length, 1);
   assert.equal(notes[0].id, "aaa");
   assert.equal(notes[0].text, "");
 });
 
 test("a hand-written note without id or kind reads as a task, addressable by position", () => {
-  const body = "Paragraph.\n\n<!-- flux:note\nDo the thing.\n-->\nAnother.";
+  const body = "Paragraph.\n\n<!-- kb25:note\nDo the thing.\n-->\nAnother.";
   const notes = parseNotes(body);
   assert.equal(notes.length, 1);
   assert.equal(notes[0].kind, "task");
@@ -195,7 +195,7 @@ test("insertNote puts the comment directly above the target block", () => {
   const lines = next.split("\n");
   assert.equal(lines[0], "First paragraph.");
   assert.equal(lines[1], "");
-  assert.equal(lines[2], "<!-- flux:note id=n7k2m4x8 kind=task at=2026-08-10T09:12:04Z");
+  assert.equal(lines[2], "<!-- kb25:note id=n7k2m4x8 kind=task at=2026-08-10T09:12:04Z");
   // The comment abuts the block it annotates, with no blank line between.
   assert.equal(lines[lines.indexOf("-->") + 1], "Second paragraph.");
   assert.equal(parseNotes(next)[0].quote, "Second");
@@ -206,12 +206,12 @@ test("insertNote adds a blank line when the preceding line is not blank", () => 
   const lines = next.split("\n");
   assert.equal(lines[0], "Alpha.");
   assert.equal(lines[1], "");
-  assert.match(lines[2], /^<!-- flux:note/);
+  assert.match(lines[2], /^<!-- kb25:note/);
 });
 
 test("insertNote at the top of the body adds no leading blank line", () => {
   const next = insertNote("Alpha.", 0, note());
-  assert.match(next.split("\n")[0], /^<!-- flux:note/);
+  assert.match(next.split("\n")[0], /^<!-- kb25:note/);
 });
 
 test("inserting above an already-annotated block keeps both notes on it", () => {
@@ -330,7 +330,7 @@ test("updateNote reports an unknown or missing id rather than silently succeedin
 });
 
 test("updateNote stamps a real id on a hand-written note so the next edit finds it", () => {
-  const body = "Paragraph.\n\n<!-- flux:note\nDo the thing.\n-->\nAnother.";
+  const body = "Paragraph.\n\n<!-- kb25:note\nDo the thing.\n-->\nAnother.";
   const next = updateNote(body, "@2", { text: "Do the other thing." });
   assert.ok(next !== null);
   const parsed = parseNotes(next);
@@ -375,7 +375,7 @@ test("note line numbers are relative to the body, so they splice back correctly"
   const parsed = parseNotes(splitFrontmatter(next).body);
   assert.equal(parsed.length, 1);
   // Reading the note's line back out of the body lands on the comment itself.
-  assert.match(splitFrontmatter(next).body.split("\n")[parsed[0].line], /^<!-- flux:note/);
+  assert.match(splitFrontmatter(next).body.split("\n")[parsed[0].line], /^<!-- kb25:note/);
   assert.match(next, /^---\ntitle: Deploy\n---\n/);
 });
 
@@ -408,7 +408,7 @@ test("note syntax inside a code fence is an example, not a note", () => {
     "Here is what a note looks like:",
     "",
     "```markdown",
-    "<!-- flux:note id=demo kind=task",
+    "<!-- kb25:note id=demo kind=task",
     "> restart the workers manually",
     "",
     "Rewrite this paragraph.",
@@ -416,7 +416,7 @@ test("note syntax inside a code fence is an example, not a note", () => {
     "After the image is pushed...",
     "```",
     "",
-    "<!-- flux:note id=real kind=task",
+    "<!-- kb25:note id=real kind=task",
     "This one is real.",
     "-->",
     "Annotated paragraph.",
@@ -429,16 +429,16 @@ test("note syntax inside a code fence is an example, not a note", () => {
     ["real"]
   );
   // ...and search must not gut the code block while stripping the real note.
-  assert.match(stripNotes(body), /<!-- flux:note id=demo/);
+  assert.match(stripNotes(body), /<!-- kb25:note id=demo/);
   assert.doesNotMatch(stripNotes(body), /This one is real/);
 });
 
 test("tilde fences and fences with a longer closing rail are both respected", () => {
-  assert.deepEqual(parseNotes("~~~\n<!-- flux:note id=a kind=task\nx\n-->\n~~~"), []);
+  assert.deepEqual(parseNotes("~~~\n<!-- kb25:note id=a kind=task\nx\n-->\n~~~"), []);
   // A closing rail may be longer than the opening one, but not shorter.
-  assert.deepEqual(parseNotes("```\n<!-- flux:note id=a kind=task\nx\n-->\n`````"), []);
+  assert.deepEqual(parseNotes("```\n<!-- kb25:note id=a kind=task\nx\n-->\n`````"), []);
   // An indented code block is already excluded by the four-space rule.
-  assert.deepEqual(parseNotes("    <!-- flux:note id=a kind=task\n    x\n    -->"), []);
+  assert.deepEqual(parseNotes("    <!-- kb25:note id=a kind=task\n    x\n    -->"), []);
 });
 
 // --- notes written by an agent -----------------------------------------------
@@ -456,14 +456,14 @@ test("an agent note round-trips, kind and byline intact", () => {
 
 test("kind=agent parses as itself while a typo still reads as a task", () => {
   const body = [
-    "<!-- flux:note id=aaa kind=agent",
+    "<!-- kb25:note id=aaa kind=agent",
     "> the phrase",
     "",
     "Why this reads the way it does.",
     "-->",
     "Annotated paragraph.",
     "",
-    "<!-- flux:note id=bbb kind=agnet",
+    "<!-- kb25:note id=bbb kind=agnet",
     "Do the thing.",
     "-->",
     "Another paragraph.",

@@ -252,7 +252,7 @@ test("inline notes are not searchable and never leak into an excerpt", async () 
     await content.createPage(
       "docs",
       "Deploy",
-      "<!-- flux:note id=aaa kind=task\n> the queue\n\nMention zookeeper here.\n-->\nWatch the queue drain."
+      "<!-- kb25:note id=aaa kind=task\n> the queue\n\nMention zookeeper here.\n-->\nWatch the queue drain."
     );
 
     // A word that appears only inside the note must not match the page.
@@ -262,7 +262,7 @@ test("inline notes are not searchable and never leak into an excerpt", async () 
     const hits = await searchPages(content, "queue", { space: "docs" });
     assert.equal(hits.length, 1);
     assert.equal(hits[0].excerpt, "Watch the queue drain.");
-    assert.doesNotMatch(hits[0].excerpt, /flux:note|-->/);
+    assert.doesNotMatch(hits[0].excerpt, /kb25:note|-->/);
   } finally {
     await kb.cleanup();
   }

@@ -31,7 +31,7 @@ function node(overrides: Partial<PageNode> & Pick<PageNode, "slug" | "title">): 
 function pageView(overrides: Partial<PageView> = {}): PageView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaces: [{ key: "flux", title: "KB25", archived: false }],
     spaceKey: "flux",
     tree: [],
     activeSlug: "flux/notes",
@@ -72,11 +72,11 @@ function note(overrides: Partial<IndexedNote> = {}): IndexedNote {
 function dashboardView(overrides: Partial<DashboardView> = {}): DashboardView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaces: [{ key: "flux", title: "KB25", archived: false }],
     spaceKey: "flux",
     tree: [],
-    titles: new Map([["flux", "Flux"]]),
-    spaceTitle: "Flux",
+    titles: new Map([["flux", "KB25"]]),
+    spaceTitle: "KB25",
     groups: [
       {
         slug: "flux/deploy",
@@ -260,7 +260,7 @@ test("the ⋯ menu for a folder shows Rename, not Edit/Download", () => {
 function folderView(overrides: Partial<FolderView> = {}): FolderView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaces: [{ key: "flux", title: "KB25", archived: false }],
     spaceKey: "flux",
     tree: [],
     activeSlug: "flux/box",
@@ -302,7 +302,7 @@ function spacesView(overrides: Partial<SpacesView> = {}): SpacesView {
   return {
     siteTitle: "KB",
     spaces: [
-      { key: "flux", title: "Flux", summary: "Notes", icon: "📘", archived: false },
+      { key: "flux", title: "KB25", summary: "Notes", icon: "📘", archived: false },
     ],
     username: "alice",
     ...overrides,
@@ -317,7 +317,7 @@ test("TODO #1: each space card carries a ⋯ menu with Rename, Archive, Delete",
   // Edit the name in place — inline rename posting the space key + new title.
   assert.match(
     html,
-    /action="\/_rename-space">[\s\S]*?name="key"[^>]*value="flux"[\s\S]*?name="title"[^>]*value="Flux"/
+    /action="\/_rename-space">[\s\S]*?name="key"[^>]*value="flux"[\s\S]*?name="title"[^>]*value="KB25"/
   );
   // Archive the whole space.
   assert.match(
@@ -329,8 +329,8 @@ test("TODO #1: each space card carries a ⋯ menu with Rename, Archive, Delete",
 });
 
 test("TODO #1: confirmDelete renders a scary confirmation posting to _delete-space", () => {
-  const html = spacesLayout(spacesView({ confirmDelete: { key: "flux", title: "Flux" } }));
-  assert.match(html, /Delete the “Flux” space\?/);
+  const html = spacesLayout(spacesView({ confirmDelete: { key: "flux", title: "KB25" } }));
+  assert.match(html, /Delete the “KB25” space\?/);
   assert.match(html, /its Git history/);
   assert.match(
     html,
@@ -556,7 +556,7 @@ test("notes: the page view carries its notes as an escaped JSON payload", () => 
       ],
     })
   );
-  assert.match(html, /<div id="flux-notes" hidden data-slug="flux\/notes" data-notes="/);
+  assert.match(html, /<div id="kb25-notes" hidden data-slug="flux\/notes" data-notes="/);
   // Everything that could break out of the attribute or the document is escaped.
   assert.match(html, /&quot;n7k2m4x8&quot;/);
   assert.match(html, /&lt;b&gt;rolling&lt;\/b&gt;/);
@@ -623,7 +623,7 @@ test("notes: whitespace normalization survives the template literal intact", () 
 test("notes: a read-only or archive view ships neither the payload nor the script", () => {
   for (const view of [pageView({ canEdit: false }), pageView({ isArchiveView: true })]) {
     const html = layout(view);
-    assert.doesNotMatch(html, /id="flux-notes"/);
+    assert.doesNotMatch(html, /id="kb25-notes"/);
     assert.doesNotMatch(html, /_notes\//);
   }
 });
@@ -738,7 +738,7 @@ test("dashboard: no button outside a space, where it would report on nothing", (
   // sidebar search.
   const html = spacesLayout({
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaces: [{ key: "flux", title: "KB25", archived: false }],
     username: "alice",
   } satisfies SpacesView);
   // The stylesheet still carries the rule — it is the anchor that must be absent.
@@ -847,7 +847,7 @@ test("dashboard: a page's location reads as section titles, not slug segments", 
   const html = dashboardLayout(
     dashboardView({
       titles: new Map([
-        ["flux", "Flux"],
+        ["flux", "KB25"],
         ["flux/runbooks", "Runbooks"],
         ["flux/runbooks/deep", "Deep Dives"],
         ["flux/runbooks/deep/deploy", "Deploy"],
@@ -865,7 +865,7 @@ test("dashboard: a page's location reads as section titles, not slug segments", 
 test("dashboard: an untitled section falls back to its slug segment", () => {
   const html = dashboardLayout(
     dashboardView({
-      titles: new Map([["flux", "Flux"]]),
+      titles: new Map([["flux", "KB25"]]),
       groups: [{ slug: "flux/runbooks/deploy", title: "Deploy", notes: [note()] }],
     })
   );
@@ -898,7 +898,7 @@ test("dashboard: an empty space says so instead of showing a bare heading", () =
   const html = dashboardLayout(
     dashboardView({ groups: [], summary: { total: 0, pages: 0, oldestAt: "", newestAt: "" } })
   );
-  assert.match(html, /No task notes in <strong>Flux<\/strong>/);
+  assert.match(html, /No task notes in <strong>KB25<\/strong>/);
   // The oldest-age card has nothing to report, and says nothing rather than "0".
   assert.match(html, /<span class="stat-value">—<\/span>/);
 });
@@ -918,7 +918,7 @@ test("dashboard: the page's own notes payload and script stay off it", () => {
   // canEdit:false, so there is nothing to annotate here and NOTES_SCRIPT — which
   // would find no article of notes — is not shipped.
   const html = dashboardLayout(dashboardView());
-  assert.doesNotMatch(html, /id="flux-notes"/);
+  assert.doesNotMatch(html, /id="kb25-notes"/);
 });
 
 test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () => {
@@ -929,7 +929,7 @@ test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () =>
   assert.match(html, /window\.addEventListener\("hashchange", focusFromHash\)/);
   // Ids are compared by splitting the attribute, not with a ~= selector that an
   // `@<line>` id would break.
-  assert.doesNotMatch(html, /data-flux-notes~=/);
+  assert.doesNotMatch(html, /data-kb25-notes~=/);
 });
 
 // --- space instructions -----------------------------------------------------
@@ -937,7 +937,7 @@ test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () =>
 function editView(over: Partial<EditView> = {}): EditView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "Flux", archived: false }],
+    spaces: [{ key: "flux", title: "KB25", archived: false }],
     spaceKey: "flux",
     tree: [],
     activeSlug: "flux/notes",
@@ -978,8 +978,8 @@ test("space instructions: the instructions editor swaps slug rename for a counte
   const html = editLayout(
     editView({
       activeSlug: "flux/_instructions",
-      title: "Flux instructions",
-      instructions: { cap: 2000, spaceTitle: "Flux" },
+      title: "KB25 instructions",
+      instructions: { cap: 2000, spaceTitle: "KB25" },
     })
   );
 
@@ -999,7 +999,7 @@ test("space instructions: the counter script ships only on that editor", () => {
   const html = editLayout(
     editView({
       activeSlug: "flux/_instructions",
-      instructions: { cap: 2000, spaceTitle: "Flux" },
+      instructions: { cap: 2000, spaceTitle: "KB25" },
     })
   );
   // The counter measures the body, not the frontmatter, since that is what is
@@ -1023,7 +1023,7 @@ test("space instructions: the hint states it is hidden and LLM-read-only", () =>
   const html = editLayout(
     editView({
       activeSlug: "flux/_instructions",
-      instructions: { cap: 2000, spaceTitle: "Flux" },
+      instructions: { cap: 2000, spaceTitle: "KB25" },
     })
   );
   assert.match(html, /hidden from the sidebar and from search/);
@@ -1054,7 +1054,7 @@ test("views: every inline script in every layout parses as JavaScript", () => {
       editLayout(
         editView({
           activeSlug: "flux/_instructions",
-          instructions: { cap: 2000, spaceTitle: "Flux" },
+          instructions: { cap: 2000, spaceTitle: "KB25" },
         })
       ),
     ],

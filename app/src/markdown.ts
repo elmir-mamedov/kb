@@ -97,11 +97,11 @@ const SECTION_FALLBACK = "section";
 /**
  * Ids a heading must not take, because the page already uses them for something
  * else. `getElementById` returns the first match in document order, and every
- * heading precedes `layout()`'s own `<div id="flux-notes">` — so a heading
- * titled "Flux notes" would answer to that lookup and the notes feature would go
+ * heading precedes `layout()`'s own `<div id="kb25-notes">` — so a heading
+ * titled "KB25 notes" would answer to that lookup and the notes feature would go
  * dark with nothing logged anywhere.
  */
-const RESERVED_SECTION_IDS = ["flux-notes"];
+const RESERVED_SECTION_IDS = ["kb25-notes"];
 
 /**
  * Claim `base` for this page, suffixing `-2`, `-3`, … until it is free.
@@ -401,8 +401,11 @@ function rewriteAttr(md: MarkdownIt, rule: string, attr: string, spaceKey: strin
   };
 }
 
-/** Opening marker of a note comment, at the start of its own line. */
-const NOTE_OPEN_RE = /^<!--[ \t]*flux:note\b/;
+/**
+ * Opening marker of a note comment, at the start of its own line. `flux:note`
+ * is the pre-rename spelling, still accepted on read -- see notes.ts.
+ */
+const NOTE_OPEN_RE = /^<!--[ \t]*(?:kb25|flux):note\b/;
 
 /** A line's content with the block indent and any blockquote markers stripped. */
 function blockLine(state: StateBlock, line: number): string {
@@ -410,7 +413,7 @@ function blockLine(state: StateBlock, line: number): string {
 }
 
 /**
- * `<!-- flux:note … -->` comments, the on-disk form of an inline note.
+ * `<!-- kb25:note … -->` comments, the on-disk form of an inline note.
  *
  * With `html: false` markdown-it's own `html_block` rule bails out, so without
  * this the comment would render as visible escaped text — and worse, its
@@ -429,7 +432,7 @@ function blockLine(state: StateBlock, line: number): string {
  * below it with nothing on screen to explain why; falling through to
  * `paragraph` shows the broken marker as text, which is loud and local.
  */
-function fluxNote(
+function kb25Note(
   state: StateBlock,
   startLine: number,
   endLine: number,
@@ -458,20 +461,20 @@ function fluxNote(
   if (lastLine < 0) return false;
   if (silent) return true;
 
-  const token = state.push("flux_note", "", 0);
+  const token = state.push("kb25_note", "", 0);
   token.map = [startLine, lastLine + 1];
   state.line = lastLine + 1;
   return true;
 }
 
 /**
- * Where `flux_table_pipes` parks the untouched source for `flux_anchor`. On
+ * Where `kb25_table_pipes` parks the untouched source for `kb25_anchor`. On
  * `state.env` rather than a closure variable so nested or repeated renders on
  * one renderer can't read each other's source.
  */
-const RAW_SRC = "fluxRawSrc";
+const RAW_SRC = "kb25RawSrc";
 
-/** The source as `md.render` received it, before `flux_table_pipes` ran. */
+/** The source as `md.render` received it, before `kb25_table_pipes` ran. */
 function rawSource(state: StateCore): string {
   const raw = (state.env as Record<string, unknown> | undefined)?.[RAW_SRC];
   return typeof raw === "string" ? raw : state.src;
@@ -498,7 +501,7 @@ function anchorTokens(tokens: Token[]): Token[] {
   // `state.push` decrements the level before stamping a closer, so `*_close`
   // tokens also report level 0 — hence the explicit `nesting` test.
   return tokens.filter(
-    (t) => t.level === 0 && t.nesting >= 0 && t.map !== null && t.type !== "flux_note"
+    (t) => t.level === 0 && t.nesting >= 0 && t.map !== null && t.type !== "kb25_note"
   );
 }
 
@@ -511,7 +514,7 @@ function anchorTokens(tokens: Token[]): Token[] {
 function noteLines(tokens: Token[]): Set<number> {
   const lines = new Set<number>();
   for (const token of tokens) {
-    if (token.type !== "flux_note" || !token.map) continue;
+    if (token.type !== "kb25_note" || !token.map) continue;
     for (let line = token.map[0]; line < token.map[1]; line += 1) lines.add(line);
   }
   return lines;
@@ -536,7 +539,7 @@ function sourceOf(lines: string[], map: [number, number], notes: Set<number>): s
  *
  * Line numbers are relative to the string handed to `md.render()` — the page
  * body, frontmatter already stripped — because the transforms markdown-it runs
- * first (`normalize`, and our own `flux_table_pipes`) rewrite characters within
+ * first (`normalize`, and our own `kb25_table_pipes`) rewrite characters within
  * a line without changing the line count.
  *
  * A note attaches to the block that *contains* it if it was written inside one
@@ -544,8 +547,8 @@ function sourceOf(lines: string[], map: [number, number], notes: Set<number>): s
  * block that starts after it. A note trailing the last block falls back to that
  * block, so a note is never rendered invisible.
  */
-function fluxAnchor(state: StateCore): void {
-  // The source as it is on disk, not as `flux_table_pipes` rewrote it: these
+function kb25Anchor(state: StateCore): void {
+  // The source as it is on disk, not as `kb25_table_pipes` rewrote it: these
   // hashes have to match the ones `sourceBlocks` computes from the stored body.
   const src = rawSource(state);
   const lines = src.split("\n");
@@ -579,14 +582,14 @@ function fluxAnchor(state: StateCore): void {
     }
     token.attrSet("data-src-line", String(anchor.line));
     token.attrSet("data-src-hash", anchor.hash);
-    if (anchor.notes.length) token.attrSet("data-flux-notes", anchor.notes.join(" "));
+    if (anchor.notes.length) token.attrSet("data-kb25-notes", anchor.notes.join(" "));
   }
 }
 
 /**
  * Give every heading a stable `id` so it can be linked to directly.
  *
- * "Anchor" already means something else in this file — `fluxAnchor` above stamps
+ * "Anchor" already means something else in this file — `kb25Anchor` above stamps
  * the *source* position a block came from, for the notes feature — so everything
  * to do with heading links is called a section instead.
  *
@@ -595,7 +598,7 @@ function fluxAnchor(state: StateCore): void {
  * and not its tags. The id is also stashed on the matching `heading_close` token,
  * which is where the renderer hangs the copy affordance.
  */
-function fluxSection(state: StateCore): void {
+function kb25Section(state: StateCore): void {
   const tokens = state.tokens;
   const heads: { open: Token; close?: Token; inline: Token; pin: string | null }[] = [];
   const pinned = new Set<string>();
@@ -649,7 +652,7 @@ function fluxSection(state: StateCore): void {
 
   // Parked here rather than re-derived by the caller, so the page's table of
   // contents and the HTML it indexes can only ever come from one pass.
-  (state.env as Record<string, unknown>).fluxSections = sections;
+  (state.env as Record<string, unknown>).kb25Sections = sections;
 }
 
 /**
@@ -730,7 +733,7 @@ export function extractSections(body: string): Section[] {
   sectionRenderer ??= createRenderer(() => undefined);
   const env: Record<string, unknown> = {};
   sectionRenderer.parse(body.replace(/\r\n?/g, "\n"), env);
-  return (env.fluxSections as Section[] | undefined) ?? [];
+  return (env.kb25Sections as Section[] | undefined) ?? [];
 }
 
 let sectionRenderer: MarkdownIt | undefined;
@@ -742,7 +745,7 @@ function anchorAttrs(md: MarkdownIt, token: Token): string {
   if (!anchor) return "";
   let out = ` data-src-line="${anchor.line}" data-src-hash="${md.utils.escapeHtml(anchor.hash)}"`;
   if (anchor.notes.length) {
-    out += ` data-flux-notes="${md.utils.escapeHtml(anchor.notes.join(" "))}"`;
+    out += ` data-kb25-notes="${md.utils.escapeHtml(anchor.notes.join(" "))}"`;
   }
   return out;
 }
@@ -919,23 +922,23 @@ export function createRenderer(
   // `|` has to be escaped in the source or it reads as a cell boundary. Runs
   // ahead of `block` for that reason, and stashes what it was given so the
   // anchors stamped later still fingerprint the body as it is stored.
-  md.core.ruler.before("block", "flux_table_pipes", (state) => {
+  md.core.ruler.before("block", "kb25_table_pipes", (state) => {
     if (state.env) (state.env as Record<string, unknown>)[RAW_SRC] = state.src;
     state.src = escapeTableWikiPipes(state.src);
   });
 
-  // Inline notes: consume the comment (see fluxNote for why this is needed at
+  // Inline notes: consume the comment (see kb25Note for why this is needed at
   // all with html:false) and stamp source anchors onto every top-level block.
-  md.block.ruler.before("table", "flux_note", fluxNote, {
+  md.block.ruler.before("table", "kb25_note", kb25Note, {
     alt: ["paragraph", "reference", "blockquote", "list"],
   });
-  md.core.ruler.push("flux_anchor", fluxAnchor);
-  // After flux_anchor, so a heading carries both its source position and its id.
-  md.core.ruler.push("flux_section", fluxSection);
+  md.core.ruler.push("kb25_anchor", kb25Anchor);
+  // After kb25_anchor, so a heading carries both its source position and its id.
+  md.core.ruler.push("kb25_section", kb25Section);
   // A newline rather than "": markdown-it relies on block tokens emitting their
   // own separators, and an empty string merges the paragraphs of a tight list
   // that has a note between them.
-  md.renderer.rules.flux_note = () => "\n";
+  md.renderer.rules.kb25_note = () => "\n";
 
   // A hover affordance after each heading's text that copies the section's
   // reference. It goes here rather than in the left gutter, which `.note-pin`
@@ -987,7 +990,7 @@ export function createRenderer(
 
     if (!silent) {
       // `\|` is how the alias pipe survives a table cell — written by hand, or
-      // by `flux_table_pipes` above on a line it read as a table row. Cell
+      // by `kb25_table_pipes` above on a line it read as a table row. Cell
       // splitting removes the escape again, so one is only still here when the
       // link turned out not to be in a table after all; either way the label
       // starts after the first pipe, escaped or not.

@@ -121,7 +121,7 @@ export function resolveAgentNote(body: string, noteId: string): ResolveNoteResul
       error:
         `Note ${id} is a ${note.kind} left by a person, and this tool only takes back an ` +
         "agent's own notes. Address it instead: make the change it asks for and delete its " +
-        "<!-- flux:note --> comment in the same kb_update_page call.",
+        "<!-- kb25:note --> comment in the same kb_update_page call.",
     };
   }
 

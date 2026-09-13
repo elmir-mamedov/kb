@@ -1,15 +1,15 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "flux-local",
-  "description": "Local marketplace for the Flux knowledge-base plugin.",
+  "name": "kb25-local",
+  "description": "Local marketplace for the KB25 knowledge-base plugin.",
   "owner": {
     "name": "Elmir Mamedov"
   },
   "plugins": [
     {
-      "name": "flux",
-      "description": "Flux KB authoring skills + the flux-kb MCP server.",
-      "source": "./flux-plugin",
+      "name": "kb25",
+      "description": "KB25 authoring skills + the kb25 MCP server.",
+      "source": "./kb25-plugin",
       "category": "productivity"
     }
   ]

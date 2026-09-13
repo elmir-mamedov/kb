@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
  * page's own Markdown as an HTML comment sitting directly above the block it
  * refers to.
  *
- *     <!-- flux:note id=n7k2m4x8 kind=task at=2026-08-10T09:12:04Z by=elmir
+ *     <!-- kb25:note id=n7k2m4x8 kind=task at=2026-08-10T09:12:04Z by=elmir
  *     > restart the workers manually
  *
  *     Stale — we use the rolling restart script now.
@@ -70,7 +70,12 @@ interface ScannedNote {
   end: number;
 }
 
-const OPEN_RE = /^ {0,3}<!--[ \t]*flux:note\b(.*)$/;
+/**
+ * The marker was `flux:note` before the rename. Notes written by an older
+ * build -- or arriving over sync from a machine that has not updated yet --
+ * still carry it, so read both spellings and write only `kb25:note`.
+ */
+const OPEN_RE = /^ {0,3}<!--[ \t]*(?:kb25|flux):note\b(.*)$/;
 const CLOSE = "-->";
 /** An opening or closing code fence: three or more backticks or tildes. */
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -118,7 +123,7 @@ export function normalizeQuote(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-/** Parse the `key=value` pairs that follow `flux:note` on the opening line. */
+/** Parse the `key=value` pairs that follow `kb25:note` on the opening line. */
 function parseAttrs(rest: string): Map<string, string> {
   const attrs = new Map<string, string>();
   for (const match of rest.matchAll(/([a-z][a-z0-9-]*)=(\S+)/gi)) {
@@ -138,7 +143,7 @@ function parseAttrs(rest: string): Map<string, string> {
 function scanNotes(body: string): ScannedNote[] {
   // Search runs this over every page on every keystroke, and almost no page has
   // a note; one substring scan is much cheaper than a regex per line.
-  if (!body.includes("flux:note")) return [];
+  if (!body.includes("kb25:note") && !body.includes("flux:note")) return [];
 
   const lines = body.split("\n");
   const found: ScannedNote[] = [];
@@ -170,7 +175,7 @@ function scanNotes(body: string): ScannedNote[] {
     let bodyLines: string[] = [];
 
     if (closeOnOpen >= 0) {
-      // `<!-- flux:note id=… -->` all on one line: a note with no text.
+      // `<!-- kb25:note id=… -->` all on one line: a note with no text.
       end = i;
     } else {
       let close = -1;
@@ -237,7 +242,7 @@ export function formatNote(note: Omit<Note, "line">): string {
   const by = note.by?.replace(/\s+/g, "");
   if (by) attrs.push(`by=${by}`);
 
-  const lines = [`<!-- flux:note ${attrs.join(" ")}`];
+  const lines = [`<!-- kb25:note ${attrs.join(" ")}`];
   if (note.quote) lines.push(`> ${escapeNoteValue(normalizeQuote(note.quote))}`);
 
   let text = escapeNoteValue(note.text.trim());

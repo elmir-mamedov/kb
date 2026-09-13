@@ -5,7 +5,7 @@ import { segment } from "./segmenter.js";
 import {
   encodeProjectDir,
   harvestSession,
-  isFluxSession,
+  isKb25Session,
   underRepo,
   type HarvestConfig,
 } from "./harvest-core.js";
@@ -14,7 +14,7 @@ import { REPO_ROOT, assistant, toStream, userPrompt } from "./fixtures.js";
 
 type Raw = Parameters<typeof toStream>[0][number];
 
-const cfg: HarvestConfig = { repoRoot: REPO_ROOT, nonFluxMode: "off" };
+const cfg: HarvestConfig = { repoRoot: REPO_ROOT, nonKb25Mode: "off" };
 
 async function harvest(raw: Raw[], priorEmitted: string[] | null, config = cfg) {
   const session = await parseTranscript(toStream(raw));
@@ -29,22 +29,22 @@ test("encodeProjectDir matches Claude Code's per-project directory naming", () =
 });
 
 test("underRepo matches the root and descendants but not sibling prefixes", () => {
-  assert.equal(underRepo("/repo/flux", "/repo/flux"), true);
-  assert.equal(underRepo("/repo/flux", "/repo/flux/app"), true);
-  assert.equal(underRepo("/repo/flux", "/repo/flux-app"), false);
-  assert.equal(underRepo("/repo/flux", undefined), false);
+  assert.equal(underRepo("/repo/kb25", "/repo/kb25"), true);
+  assert.equal(underRepo("/repo/kb25", "/repo/kb25/app"), true);
+  assert.equal(underRepo("/repo/kb25", "/repo/kb25-app"), false);
+  assert.equal(underRepo("/repo/kb25", undefined), false);
 });
 
-test("isFluxSession requires most located turns to be inside the repo", async () => {
+test("isKb25Session requires most located turns to be inside the repo", async () => {
   const inRepo = await parseTranscript(
-    toStream([userPrompt("go", { uuid: "u1", cwd: "/repo/flux/app" })])
+    toStream([userPrompt("go", { uuid: "u1", cwd: "/repo/kb25/app" })])
   );
-  assert.equal(isFluxSession(REPO_ROOT, inRepo), true);
+  assert.equal(isKb25Session(REPO_ROOT, inRepo), true);
 
   const elsewhere = await parseTranscript(
     toStream([userPrompt("go", { uuid: "u1", cwd: "/somewhere/else" })])
   );
-  assert.equal(isFluxSession(REPO_ROOT, elsewhere), false);
+  assert.equal(isKb25Session(REPO_ROOT, elsewhere), false);
 });
 
 test("re-running only emits tasks not already emitted (watermark honored)", async () => {
@@ -77,21 +77,21 @@ test("re-running only emits tasks not already emitted (watermark honored)", asyn
   );
 });
 
-test("non-flux tasks are dropped by default, kept with --full, redacted with --redacted", async () => {
+test("non-kb25 tasks are dropped by default, kept with --full, redacted with --redacted", async () => {
   const raw: Raw[] = [
     userPrompt("outside work", { uuid: "u1", cwd: "/other/project" }),
     assistant({ uuid: "a1", parentUuid: "u1", text: ["ok"] }),
   ];
 
-  const off = await harvest(raw, null, { repoRoot: REPO_ROOT, nonFluxMode: "off" });
+  const off = await harvest(raw, null, { repoRoot: REPO_ROOT, nonKb25Mode: "off" });
   assert.equal(off.events.length, 0);
 
-  const full = await harvest(raw, null, { repoRoot: REPO_ROOT, nonFluxMode: "full" });
+  const full = await harvest(raw, null, { repoRoot: REPO_ROOT, nonKb25Mode: "full" });
   const fullTask = full.events.find((e): e is Extract<HarvestEvent, { kind: "task" }> => e.kind === "task");
   assert.ok(fullTask);
   assert.equal(fullTask!.promptText, "outside work");
 
-  const redacted = await harvest(raw, null, { repoRoot: REPO_ROOT, nonFluxMode: "redacted" });
+  const redacted = await harvest(raw, null, { repoRoot: REPO_ROOT, nonKb25Mode: "redacted" });
   const redactedTask = redacted.events.find((e): e is Extract<HarvestEvent, { kind: "task" }> => e.kind === "task");
   assert.ok(redactedTask);
   assert.match(redactedTask!.promptText, /^\[redacted \d+ chars sha256:[0-9a-f]{8}\]$/);

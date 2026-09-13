@@ -12,7 +12,7 @@ test("a real prompt starts a task; meta and tool_result turns do not", async () 
       assistant({
         uuid: "a1",
         parentUuid: "u1",
-        toolUses: [{ id: "c1", name: "mcp__flux-kb__kb_search" }],
+        toolUses: [{ id: "c1", name: "mcp__kb25__kb_search" }],
       }),
       userToolResult([{ toolUseId: "c1", content: "[]" }], { uuid: "u2", parentUuid: "a1" }),
       assistant({ uuid: "a2", parentUuid: "u2", text: ["done"] }),

@@ -18,7 +18,7 @@ function noteComment(
   quote: string,
   text: string
 ): string {
-  return `<!-- flux:note id=${id} kind=${kind} at=${at} by=elmir\n> ${quote}\n\n${text}\n-->`;
+  return `<!-- kb25:note id=${id} kind=${kind} at=${at} by=elmir\n> ${quote}\n\n${text}\n-->`;
 }
 
 /** A bare `IndexedNote` for the pure helpers, which never touch the filesystem. */

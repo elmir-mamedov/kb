@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
  */
 
 export const SESSION_ID = "sess-test";
-export const REPO_ROOT = "/repo/flux";
+export const REPO_ROOT = "/repo/kb25";
 
 interface Common {
   uuid: string;

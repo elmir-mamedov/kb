@@ -680,7 +680,7 @@ test("editing a page — body or note — leaves the sidebar exactly as it was",
     const deep = await content.loadRaw("docs/alpha/deep");
     await content.updateRaw(
       "docs/alpha/deep",
-      `${deep!.raw}\n<!-- flux:note id=n1 kind=task\n> Deep\n\nFix this.\n-->\n`
+      `${deep!.raw}\n<!-- kb25:note id=n1 kind=task\n> Deep\n\nFix this.\n-->\n`
     );
 
     assert.deepEqual(await orderOf(content, "docs"), before);

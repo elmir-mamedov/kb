@@ -87,9 +87,9 @@ export interface ClarifyingQuestionEvent extends HarvestEventBase {
   questionText: string;
 }
 
-/** A single `mcp__flux-kb__*` tool call and (a summary of) its result. */
-export interface FluxToolCallEvent extends HarvestEventBase {
-  kind: "flux_tool_call";
+/** A single `mcp__kb25__*` tool call and (a summary of) its result. */
+export interface Kb25ToolCallEvent extends HarvestEventBase {
+  kind: "kb25_tool_call";
   name: string;
   input: unknown;
   ok: boolean;
@@ -102,7 +102,7 @@ export type HarvestEvent =
   | TaskEvent
   | ReasoningEvent
   | ClarifyingQuestionEvent
-  | FluxToolCallEvent;
+  | Kb25ToolCallEvent;
 
 /** Discriminants reserved for later phases: "correction_pair", task.outcome, etc. */
 export type HarvestEventKind = HarvestEvent["kind"];

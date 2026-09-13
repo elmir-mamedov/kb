@@ -5,13 +5,13 @@ import type { Task } from "./segmenter.js";
 import type { HarvestEvent } from "./event-schema.js";
 import type { NormalizedTurn, Session } from "./transcript-types.js";
 
-/** How to treat tasks whose working directory is outside the Flux repo. */
-export type NonFluxMode = "off" | "redacted" | "full";
+/** How to treat tasks whose working directory is outside the KB25 repo. */
+export type NonKb25Mode = "off" | "redacted" | "full";
 
 export interface HarvestConfig {
-  /** Absolute path to the Flux repo root. */
+  /** Absolute path to the KB25 repo root. */
   repoRoot: string;
-  nonFluxMode: NonFluxMode;
+  nonKb25Mode: NonKb25Mode;
 }
 
 /** Encode an absolute path the way Claude Code names its per-project dir. */
@@ -26,15 +26,15 @@ export function underRepo(repoRoot: string, p: string | undefined): boolean {
 }
 
 /** Guard against a resumed session that `cd`'d away: most turns must be in the repo. */
-export function isFluxSession(repoRoot: string, session: Session): boolean {
+export function isKb25Session(repoRoot: string, session: Session): boolean {
   const withCwd = session.turns.filter((t) => t.cwd);
   if (withCwd.length === 0) return true;
   const inRepo = withCwd.filter((t) => underRepo(repoRoot, t.cwd)).length;
   return inRepo / withCwd.length >= 0.5;
 }
 
-/** A task is flux-scoped when its opening prompt was issued inside the repo. */
-export function isFluxTask(repoRoot: string, task: Task): boolean {
+/** A task is kb25-scoped when its opening prompt was issued inside the repo. */
+export function isKb25Task(repoRoot: string, task: Task): boolean {
   const start: NormalizedTurn | undefined = task.turns[0];
   return start?.cwd ? underRepo(repoRoot, start.cwd) : true;
 }
@@ -47,7 +47,7 @@ export interface HarvestSessionResult {
 
 /**
  * Build the events for the tasks of one parsed session that have not been
- * emitted before, applying the non-flux policy and redaction. `priorEmitted`
+ * emitted before, applying the non-kb25 policy and redaction. `priorEmitted`
  * is the set of task startUuids already emitted (pass `null` to re-emit all,
  * e.g. after a truncation/rotation reset).
  */
@@ -64,15 +64,15 @@ export function harvestSession(
   const redactedTaskIds = new Set<string>();
   const kept: Task[] = [];
   for (const task of fresh) {
-    if (isFluxTask(cfg.repoRoot, task)) {
+    if (isKb25Task(cfg.repoRoot, task)) {
       kept.push(task);
-    } else if (cfg.nonFluxMode === "full") {
+    } else if (cfg.nonKb25Mode === "full") {
       kept.push(task);
-    } else if (cfg.nonFluxMode === "redacted") {
+    } else if (cfg.nonKb25Mode === "redacted") {
       kept.push(task);
       redactedTaskIds.add(task.taskId);
     }
-    // "off" (default): drop non-flux tasks entirely.
+    // "off" (default): drop non-kb25 tasks entirely.
   }
 
   let events = extractSignals(session, kept, { emittedAt });
@@ -93,7 +93,7 @@ export function redactEvent(event: HarvestEvent): HarvestEvent {
       return { ...event, blocks: event.blocks.map((b) => ({ ...b, text: redact(b.text) })) };
     case "clarifying_question":
       return { ...event, questionText: redact(event.questionText) };
-    case "flux_tool_call":
+    case "kb25_tool_call":
       return { ...event, input: "[redacted]", resultSummary: redact(event.resultSummary) };
   }
 }

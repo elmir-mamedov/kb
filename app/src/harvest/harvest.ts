@@ -11,9 +11,9 @@ import { makeSink, type SessionWatermark } from "./sink.js";
 import {
   encodeProjectDir,
   harvestSession,
-  isFluxSession,
+  isKb25Session,
   type HarvestConfig,
-  type NonFluxMode,
+  type NonKb25Mode,
 } from "./harvest-core.js";
 import type { Session } from "./transcript-types.js";
 
@@ -23,9 +23,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadEnvFile(path.join(__dirname, "..", "..", "..", ".env"));
 loadEnvFile(path.join(__dirname, "..", "..", ".env"));
 
-/** Absolute path to the Flux repo root (parent of `app/`). */
-const FLUX_REPO_ROOT = path.resolve(
-  process.env.FLUX_REPO_ROOT ?? path.join(__dirname, "..", "..", "..")
+/** Absolute path to the KB25 repo root (parent of `app/`). */
+const KB25_REPO_ROOT = path.resolve(
+  process.env.KB25_REPO_ROOT ?? path.join(__dirname, "..", "..", "..")
 );
 /** Where Claude Code stores session transcripts, one dir per project cwd. */
 const CLAUDE_PROJECTS_DIR = path.resolve(
@@ -37,20 +37,20 @@ const HARVEST_OUT_DIR = path.resolve(
 );
 
 interface CliOptions {
-  nonFluxMode: NonFluxMode;
+  nonKb25Mode: NonKb25Mode;
   dryRun: boolean;
 }
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
-  const projectDir = path.join(CLAUDE_PROJECTS_DIR, encodeProjectDir(FLUX_REPO_ROOT));
+  const projectDir = path.join(CLAUDE_PROJECTS_DIR, encodeProjectDir(KB25_REPO_ROOT));
 
   if (!fs.existsSync(projectDir)) {
-    console.error(`No transcripts found for ${FLUX_REPO_ROOT} (looked in ${projectDir}).`);
+    console.error(`No transcripts found for ${KB25_REPO_ROOT} (looked in ${projectDir}).`);
     return;
   }
 
-  const cfg: HarvestConfig = { repoRoot: FLUX_REPO_ROOT, nonFluxMode: opts.nonFluxMode };
+  const cfg: HarvestConfig = { repoRoot: KB25_REPO_ROOT, nonKb25Mode: opts.nonKb25Mode };
   const sink = makeSink(HARVEST_OUT_DIR);
   const state = await sink.loadState();
   const emittedAt = new Date().toISOString();
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
     }
 
     const session = await parseTranscriptFile(filePath);
-    if (!isFluxSession(FLUX_REPO_ROOT, session)) {
+    if (!isKb25Session(KB25_REPO_ROOT, session)) {
       sessionsSkipped++;
       continue;
     }
@@ -124,16 +124,16 @@ function watermark(
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const opts: CliOptions = { nonFluxMode: "off", dryRun: false };
+  const opts: CliOptions = { nonKb25Mode: "off", dryRun: false };
   for (const arg of argv) {
     if (arg === "--dry-run") {
       opts.dryRun = true;
-    } else if (arg.startsWith("--include-nonflux-context=")) {
-      const value = arg.slice("--include-nonflux-context=".length);
+    } else if (arg.startsWith("--include-nonkb25-context=")) {
+      const value = arg.slice("--include-nonkb25-context=".length);
       if (value === "off" || value === "redacted" || value === "full") {
-        opts.nonFluxMode = value;
+        opts.nonKb25Mode = value;
       } else {
-        throw new Error(`Invalid --include-nonflux-context: ${value} (off|redacted|full)`);
+        throw new Error(`Invalid --include-nonkb25-context: ${value} (off|redacted|full)`);
       }
     } else {
       throw new Error(`Unknown argument: ${arg}`);

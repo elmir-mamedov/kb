@@ -8,10 +8,10 @@ const execFileAsync = promisify(execFile);
 
 // Deterministic git identity so commits in throwaway repos succeed without
 // depending on (or mutating) the developer's global git config.
-process.env.GIT_AUTHOR_NAME ||= "Flux Test";
-process.env.GIT_AUTHOR_EMAIL ||= "test@flux.local";
-process.env.GIT_COMMITTER_NAME ||= "Flux Test";
-process.env.GIT_COMMITTER_EMAIL ||= "test@flux.local";
+process.env.GIT_AUTHOR_NAME ||= "KB25 Test";
+process.env.GIT_AUTHOR_EMAIL ||= "test@kb25.local";
+process.env.GIT_COMMITTER_NAME ||= "KB25 Test";
+process.env.GIT_COMMITTER_EMAIL ||= "test@kb25.local";
 
 export interface TempKb {
   /** Absolute path to a throwaway KB root (the parent of the space folders). */
@@ -22,7 +22,7 @@ export interface TempKb {
 
 /** Create an isolated, empty KB directory for a single test. */
 export async function makeTempKb(): Promise<TempKb> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flux-kb-test-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kb25-test-"));
   return {
     dir,
     cleanup: () => fs.rm(dir, { recursive: true, force: true }),

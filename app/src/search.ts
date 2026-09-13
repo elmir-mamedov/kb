@@ -268,7 +268,7 @@ export async function searchPages(
       ...hit,
       // Sections come from the same note-stripped body the match was found in,
       // so the line numbers line up. The ids still match the rendered page: a
-      // heading inside a note comment is consumed by `flux_note` there too, so
+      // heading inside a note comment is consumed by `kb25_note` there too, so
       // the sequence of real headings — and every id derived from it — is the
       // same either way.
       section: sectionFor(query, body, extractSections(body)),

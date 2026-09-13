@@ -247,8 +247,8 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message.split("\n")[0] ?? "" : String(error);
 }
 
-/** Truthy spellings accepted for the `KB_SYNC` switch. */
-function envFlag(name: string): boolean {
+/** Truthy spellings accepted for an on/off env switch such as `KB_SYNC`. */
+export function envFlag(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
 }
 

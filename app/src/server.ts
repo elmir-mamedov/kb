@@ -19,7 +19,8 @@ import {
   type ReorderMutation,
 } from "./content.js";
 import { makeGit } from "./git.js";
-import { envNumber, syncFromEnv } from "./sync.js";
+import { makeLoginThrottle, retryAfterWords } from "./login-throttle.js";
+import { envFlag, envNumber, syncFromEnv } from "./sync.js";
 import { parseWordDiff } from "./diff.js";
 import { createRenderer, noteSegments, sourceBlocks, type Section } from "./markdown.js";
 import { collectNotes, groupNotesByPage, summarizeNotes } from "./note-index.js";
@@ -68,8 +69,9 @@ const KB_DIR = path.resolve(
   process.env.KB_DIR ?? path.join(__dirname, "..", "..", "kb")
 );
 // Loopback-only by default, so the viewer is reachable from this machine and
-// nowhere else. Fastify binds both 127.0.0.1 and ::1 for "localhost". Set
-// HOST=0.0.0.0 to deliberately expose it to the LAN.
+// nowhere else. Fastify binds both 127.0.0.1 and ::1 for "localhost". Leave it
+// there: a wider bind publishes a sign-in form backed by one static credential
+// pair, in cleartext unless something in front of it terminates TLS.
 const HOST = process.env.HOST ?? "localhost";
 const PORT = Number(process.env.PORT ?? 4000);
 const SITE_TITLE = process.env.SITE_TITLE ?? "Knowledge Base";
@@ -96,7 +98,7 @@ const PUBLIC_FILES = [
   "favicon-192x192.png",
   "favicon-512x512.png",
   "apple-touch-icon.png",
-  "flux.svg",
+  "kb25.svg",
 ];
 const PUBLIC_PATHS = new Set(PUBLIC_FILES.map((file) => `/${file}`));
 const AUTH_USERNAME = requireEnv("AUTH_USERNAME");
@@ -110,7 +112,18 @@ const content = new Content(KB_DIR);
 // debounced push; failures never reach the request that triggered them.
 const sync = syncFromEnv(KB_DIR);
 const git = makeGit(KB_DIR, sync ? (repoRoot) => sync.notifyCommit(repoRoot) : undefined);
-const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
+// TRUST_PROXY only when the viewer really does sit behind one: it makes Fastify
+// believe `x-forwarded-*`, which is what lets `req.protocol` and `req.ip` report
+// the client rather than the proxy. Believing those headers unproxied would let
+// any caller spoof both, and `req.ip` keys the sign-in lockout.
+const app = Fastify({
+  logger: false,
+  bodyLimit: 5 * 1024 * 1024,
+  trustProxy: envFlag("TRUST_PROXY"),
+});
+// Repeated wrong passwords cost the caller a cooldown; one account means an
+// unthrottled form would otherwise answer guesses as fast as they arrive.
+const loginThrottle = makeLoginThrottle();
 
 function loadEnvFile(filePath: string): void {
   if (!fs.existsSync(filePath)) return;
@@ -241,14 +254,25 @@ function currentUser(req: FastifyRequest): string | null {
   return readSession(parseCookies(req.headers.cookie).get(SESSION_COOKIE));
 }
 
-function sessionCookie(token: string): string {
-  return `${SESSION_COOKIE}=${encodeURIComponent(
-    token
-  )}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+/**
+ * `Secure` is set from the scheme the request arrived on rather than hardcoded
+ * either way. Over HTTPS it keeps the session off any cleartext hop; over the
+ * default loopback HTTP it must stay off, because a browser drops a `Secure`
+ * cookie sent in the clear and the sign-in would silently never take.
+ */
+function cookieAttributes(req: FastifyRequest): string {
+  return `Path=/; HttpOnly; SameSite=Lax${req.protocol === "https" ? "; Secure" : ""}`;
 }
 
-function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+function sessionCookie(token: string, req: FastifyRequest): string {
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${cookieAttributes(
+    req
+  )}; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+}
+
+function clearSessionCookie(req: FastifyRequest): string {
+  // Same attributes as the cookie being cleared, or the browser keeps the old one.
+  return `${SESSION_COOKIE}=; ${cookieAttributes(req)}; Max-Age=0`;
 }
 
 app.addHook("onRequest", async (req, reply) => {
@@ -463,7 +487,7 @@ async function renderPage(
   // id and a copy affordance like every other — but listing them turns the rail
   // into a second copy of the page. An h1 in the body just repeats the title
   // already standing above it.
-  const sections = ((env.fluxSections as Section[] | undefined) ?? []).filter(
+  const sections = ((env.kb25Sections as Section[] | undefined) ?? []).filter(
     (s) => s.level === 2 || s.level === 3
   );
 
@@ -700,9 +724,37 @@ app.post("/_login", async (req, reply) => {
   const username = formString(req.body, "username") ?? "";
   const password = formString(req.body, "password") ?? "";
 
+  /** The cooled-off form: 429 so a caller's tooling sees the refusal for what it is. */
+  const lockedOut = (retryAfterSeconds: number) =>
+    reply
+      .code(429)
+      .header("retry-after", String(retryAfterSeconds))
+      .type("text/html")
+      .send(
+        loginLayout({
+          siteTitle: SITE_TITLE,
+          error: `Too many failed sign-ins. Try again in ${retryAfterWords(
+            retryAfterSeconds
+          )}.`,
+          next,
+          username,
+        })
+      );
+
+  // Asked before the password is read, so a locked-out caller learns nothing
+  // from the answer it gets.
+  const gate = loginThrottle.check(req.ip);
+  if (!gate.allowed) return lockedOut(gate.retryAfterSeconds);
+
   if (username === AUTH_USERNAME && password === AUTH_PASSWORD) {
-    return reply.header("set-cookie", sessionCookie(createSession(username))).redirect(next, 303);
+    loginThrottle.recordSuccess(req.ip);
+    return reply
+      .header("set-cookie", sessionCookie(createSession(username), req))
+      .redirect(next, 303);
   }
+
+  const after = loginThrottle.recordFailure(req.ip);
+  if (!after.allowed) return lockedOut(after.retryAfterSeconds);
 
   return reply.code(401).type("text/html").send(
     loginLayout({
@@ -714,8 +766,8 @@ app.post("/_login", async (req, reply) => {
   );
 });
 
-app.post("/_logout", async (_req, reply) => {
-  return reply.header("set-cookie", clearSessionCookie()).redirect("/_login", 303);
+app.post("/_logout", async (req, reply) => {
+  return reply.header("set-cookie", clearSessionCookie(req)).redirect("/_login", 303);
 });
 
 app.post("/_create", async (req, reply) => {

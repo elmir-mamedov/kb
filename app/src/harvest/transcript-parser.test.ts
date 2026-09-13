@@ -78,7 +78,7 @@ test("builds parent/child and tool_use -> tool_result indexes across turns", asy
       assistant({
         uuid: "a1",
         parentUuid: "u1",
-        toolUses: [{ id: "call1", name: "mcp__flux-kb__kb_get_page" }],
+        toolUses: [{ id: "call1", name: "mcp__kb25__kb_get_page" }],
       }),
       userToolResult([{ toolUseId: "call1", content: "{\"ok\":true}" }], {
         uuid: "u2",

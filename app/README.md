@@ -13,10 +13,11 @@ npm run mcp      # stdio MCP server for local agent/client integrations
 ```
 
 It binds to `localhost` only, so nothing outside this machine can reach it.
-Keep it that way. Sign-in is a single static username/password with no rate
-limiting and the session cookie is not marked `Secure`, so binding a wider
-interface puts an unthrottled login form on the network in cleartext. To share
-a knowledge base with the team, give each person their own copy and let the
+Keep it that way. Sign-in is one static username/password: repeated wrong
+answers cost that caller a cooldown, which slows guessing without making the
+form safe to publish, and a wider bind puts it on the network in cleartext
+unless something in front of it terminates TLS. To share a knowledge base with
+the team, give each person their own copy and let the
 `kb/` space repos sync through their own git remotes (`KB_SYNC=1`) rather than
 pointing everyone at one exposed process.
 
@@ -31,10 +32,18 @@ pointing everyone at one exposed process.
 | `AUTH_USERNAME` | required   | Username for browser sign-in.            |
 | `AUTH_PASSWORD` | required   | Password for browser sign-in.            |
 | `AUTH_SESSION_SECRET` | required | Secret used to sign session cookies. |
+| `TRUST_PROXY` | off          | Believe `x-forwarded-*`. Only behind a real reverse proxy. |
 
 ```bash
 KB_DIR=/path/to/kb PORT=8080 SITE_TITLE="Team Wiki" npm start
 ```
+
+The session cookie is `HttpOnly` and `SameSite=Lax`, and picks up `Secure` when
+the request arrives over HTTPS. Behind a proxy that terminates TLS, set
+`TRUST_PROXY=1` so `x-forwarded-proto` and `x-forwarded-for` are believed — the
+viewer reads the first to know it is on HTTPS and the second to tell callers
+apart for the sign-in cooldown. Leave it off otherwise: unproxied, a caller
+writes those headers itself.
 
 ## What it does
 
@@ -109,7 +118,7 @@ Example Claude / Claude Desktop config:
 ```json
 {
   "mcpServers": {
-    "flux-kb": {
+    "kb25": {
       "command": "/Users/elmir.mamedov/dev/flux/app/node_modules/.bin/tsx",
       "args": ["/Users/elmir.mamedov/dev/flux/app/src/mcp.ts"],
       "env": {
@@ -123,11 +132,11 @@ Example Claude / Claude Desktop config:
 Example Codex CLI config (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.flux-kb]
+[mcp_servers.kb25]
 command = "/Users/elmir.mamedov/dev/flux/app/node_modules/.bin/tsx"
 args = ["/Users/elmir.mamedov/dev/flux/app/src/mcp.ts"]
 
-[mcp_servers.flux-kb.env]
+[mcp_servers.kb25.env]
 KB_DIR = "/Users/elmir.mamedov/dev/flux/kb"
 ```
 

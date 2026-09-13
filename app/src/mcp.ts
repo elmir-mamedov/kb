@@ -299,13 +299,13 @@ async function writeToken(spaceKey: string): Promise<{ spaceInstructionsToken?: 
 function refuseInstructionsPath(slug: string) {
   if (!isInstructionsSlug(slug)) return null;
   return errorResult(
-    "A space's instructions are edited only from the Flux web UI (the Space instructions button, top right). They are the space owner's standing orders, so the tools will not change them. You can read them with kb_get_space_instructions."
+    "A space's instructions are edited only from the KB25 web UI (the Space instructions button, top right). They are the space owner's standing orders, so the tools will not change them. You can read them with kb_get_space_instructions."
   );
 }
 
 const server = new McpServer(
   {
-    name: "flux-kb",
+    name: "kb25",
     version: VERSION,
   },
   {
@@ -351,7 +351,7 @@ server.registerTool(
   {
     title: "Get Space Instructions",
     description:
-      "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructionsToken` value the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the Flux web UI; the tools cannot change them.",
+      "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructionsToken` value the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the KB25 web UI; the tools cannot change them.",
     inputSchema: {
       space: z.string().min(1).describe("Space key — its top-level folder name, e.g. flux."),
     },
@@ -494,7 +494,7 @@ server.registerTool(
   {
     title: "List KB Notes",
     description:
-      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is; an `agent` note is one you left yourself, explaining something about the page to whoever reads it next, and is not work either — leave it alone unless it has gone wrong, and take it down with kb_resolve_agent_note rather than by hand. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- flux:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history. A note is written into the Markdown as `<!-- flux:note id=... kind=task|remark|highlight|agent ... -->`, anchored directly above the block it refers to. Never delete a note without addressing it, and never leave one you have acted on.",
+      "Return the inline notes left on pages — messages anchored to one specific block of a page's Markdown. Call this to find work waiting in the knowledge base (\"address my notes\"). A `task` note asks for a change to the page; a `remark` is context to read and respect, not act on; a `highlight` only marks a phrase the reader thought worth remembering, carries no text, and is not work — leave it exactly where it is; an `agent` note is one you left yourself, explaining something about the page to whoever reads it next, and is not work either — leave it alone unless it has gone wrong, and take it down with kb_resolve_agent_note rather than by hand. Each note reports the `quote` it was attached to, so you can find the exact text it refers to. Addressing a task means editing the prose AND deleting that note's `<!-- kb25:note ... -->` comment in the same kb_update_page call — a note is resolved by removing it, and git keeps the history. A note is written into the Markdown as `<!-- kb25:note id=... kind=task|remark|highlight|agent ... -->`, anchored directly above the block it refers to. Never delete a note without addressing it, and never leave one you have acted on.",
     inputSchema: {
       slug: z.string().optional().describe("Limit to a single page, by slug."),
       space: z
@@ -720,7 +720,7 @@ server.registerTool(
   {
     title: "Update KB Page",
     description:
-      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required), and it must keep the page's existing `id` — that id is what `[[id:<id>]]` links resolve through, so read the current source first with kb_get_page (format: raw) rather than composing frontmatter from scratch. Do not add or reword inline notes as a side effect of an unrelated edit; preserve the ones you were not asked about. To leave an explanation of your own, use kb_add_agent_note rather than writing `<!-- flux:note ... -->` syntax by hand — a note written by hand gets no id, so nothing can resolve it afterwards. Folders have no body and are rejected — use kb_rename_folder to rename one.",
+      "Replace a page's entire Markdown source, including frontmatter. The frontmatter must be valid (a title is required), and it must keep the page's existing `id` — that id is what `[[id:<id>]]` links resolve through, so read the current source first with kb_get_page (format: raw) rather than composing frontmatter from scratch. Do not add or reword inline notes as a side effect of an unrelated edit; preserve the ones you were not asked about. To leave an explanation of your own, use kb_add_agent_note rather than writing `<!-- kb25:note ... -->` syntax by hand — a note written by hand gets no id, so nothing can resolve it afterwards. Folders have no body and are rejected — use kb_rename_folder to rename one.",
     inputSchema: {
       slug: z.string().describe("Page slug, e.g. engineering/runbooks/deploy."),
       markdown: z.string().describe("Full replacement Markdown source, including YAML frontmatter."),
@@ -857,7 +857,7 @@ server.registerTool(
   {
     title: "Resolve an Agent Note",
     description:
-      "Take down one of your own notes by id — one you left that has become wrong, has been answered, or was about text that no longer exists. Only `agent` notes, the ones you wrote: a person's `task` or `remark` is not yours to clear with a tool call. A task is addressed by making the change it asks for AND deleting its `<!-- flux:note ... -->` comment in the same kb_update_page call, which is deliberately the only way to close one. kb_list_notes with kind: agent reports the ids. Resolving deletes the note outright; git keeps it.",
+      "Take down one of your own notes by id — one you left that has become wrong, has been answered, or was about text that no longer exists. Only `agent` notes, the ones you wrote: a person's `task` or `remark` is not yours to clear with a tool call. A task is addressed by making the change it asks for AND deleting its `<!-- kb25:note ... -->` comment in the same kb_update_page call, which is deliberately the only way to close one. kb_list_notes with kind: agent reports the ids. Resolving deletes the note outright; git keeps it.",
     inputSchema: {
       slug: z.string().describe("Page slug the note sits on."),
       noteId: z.string().min(1).describe("The note's `id`, as reported by kb_list_notes."),
@@ -1210,7 +1210,7 @@ server.registerResource(
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`flux-kb MCP server running on stdio; KB_DIR=${KB_DIR}`);
+  console.error(`kb25 MCP server running on stdio; KB_DIR=${KB_DIR}`);
   // Pull *after* connecting, never before: MCP clients enforce a startup timeout
   // (10s by default per flux/install-mcp-on-new-machine.md), and blocking that on
   // a network round-trip could stop the server coming up at all. A slightly stale

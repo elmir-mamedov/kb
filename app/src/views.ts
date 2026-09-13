@@ -554,7 +554,7 @@ export function layout(v: PageView): string {
   const notesData =
     v.canEdit === false || v.isArchiveView || !v.activeSlug
       ? ""
-      : `<div id="flux-notes" hidden data-slug="${escapeHtml(v.activeSlug)}" data-notes="${escapeHtml(JSON.stringify(v.notes ?? []))}"></div>`;
+      : `<div id="kb25-notes" hidden data-slug="${escapeHtml(v.activeSlug)}" data-notes="${escapeHtml(JSON.stringify(v.notes ?? []))}"></div>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -760,7 +760,7 @@ function noteRef(slug: string, id: string): string {
  * is invalid, and the two are separate destinations anyway.
  *
  * Every field here was written into a file by a person or an agent, so all of it
- * is escaped, exactly as the `#flux-notes` payload treats the same strings.
+ * is escaped, exactly as the `#kb25-notes` payload treats the same strings.
  */
 function noteRow(note: NotePageGroup["notes"][number], slug: string, now: number): string {
   const href = `${slugPath(slug)}#note-${encodeURIComponent(note.id)}`;
@@ -1188,7 +1188,7 @@ function spaceMenu(space: SpaceInfo): string {
  * modern tabs, bookmarks, and iOS home-screen shortcuts.
  */
 const FAVICON_TAGS = `<link rel="icon" href="/favicon.ico" sizes="any" />
-<link rel="icon" type="image/svg+xml" href="/flux.svg" />
+<link rel="icon" type="image/svg+xml" href="/kb25.svg" />
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />`;
@@ -1202,15 +1202,15 @@ const PAGE_DOT = `<svg class="tree-page-dot" viewBox="0 0 16 16" width="14" heig
 /** Two stacked sheets: the copy affordance on the dashboard's note-id buttons. */
 const COPY_GLYPH = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></svg>`;
 
-/** Help dialog content: a short Flux overview plus the keyboard shortcuts. */
+/** Help dialog content: a short KB25 overview plus the keyboard shortcuts. */
 const HELP_DIALOG = `<dialog class="help-dialog" data-help-dialog>
   <form method="dialog" class="help-head">
-    <h2>Flux Help</h2>
+    <h2>KB25 Help</h2>
     <button class="help-close" aria-label="Close help" value="close">&times;</button>
   </form>
   <section class="help-section">
-    <h3>About Flux</h3>
-    <p>Flux is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them: drop a page <em>onto</em> another one to nest it inside, or onto the line that appears <em>between</em> two pages to put it there &mdash; including the line at the top level, which lifts a child page back out to the space root. Use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, copy its link, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
+    <h3>About KB25</h3>
+    <p>KB25 is a lean Markdown knowledge base. Content is organized into <strong>spaces</strong> &mdash; the top-level containers shown on the home page &mdash; and each space holds a tree of pages in the sidebar. Open any page and press <strong>Edit</strong> to change its Markdown; every save is committed to Git automatically. Drag pages in the sidebar to re-organize them: drop a page <em>onto</em> another one to nest it inside, or onto the line that appears <em>between</em> two pages to put it there &mdash; including the line at the top level, which lifts a child page back out to the space root. Use the <strong>&ctdot;</strong> menu next to a page to add a child, edit, download, copy its link, or delete it. <strong>Folders</strong> are pure containers &mdash; they hold pages and other folders but have no content of their own, so you rename them instead of editing them.</p>
   </section>
   <section class="help-section">
     <h3>Keyboard shortcuts</h3>
@@ -2363,8 +2363,8 @@ const SPACE_MENU_SCRIPT = `
  * selection become a new one.
  *
  * The renderer stamps each top-level block with `data-src-line` / `data-src-hash`
- * and lists the ids of the notes attached to it in `data-flux-notes`; the notes
- * themselves arrive as JSON on `#flux-notes`. Everything here is built with
+ * and lists the ids of the notes attached to it in `data-kb25-notes`; the notes
+ * themselves arrive as JSON on `#kb25-notes`. Everything here is built with
  * `createElement` and text nodes — never `innerHTML` — because note text comes
  * from a file a person or an agent can write anything into.
  *
@@ -2374,7 +2374,7 @@ const SPACE_MENU_SCRIPT = `
 const NOTES_SCRIPT = `
 (() => {
   const article = document.querySelector("article.prose");
-  const payload = document.getElementById("flux-notes");
+  const payload = document.getElementById("kb25-notes");
   if (!article || !payload) return;
 
   const slug = payload.getAttribute("data-slug") || "";
@@ -2509,9 +2509,9 @@ const NOTES_SCRIPT = `
   }
 
   function paint() {
-    const blocks = article.querySelectorAll("[data-flux-notes]");
+    const blocks = article.querySelectorAll("[data-kb25-notes]");
     for (const block of blocks) {
-      const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+      const ids = (block.getAttribute("data-kb25-notes") || "").split(" ").filter(Boolean);
       const present = ids.filter((id) => byId.has(id));
       if (!present.length) continue;
 
@@ -3041,8 +3041,8 @@ const NOTES_SCRIPT = `
         if (mark.getAttribute("data-note-mark") === id) mark.classList.add("is-active");
       }
     } else {
-      for (const block of article.querySelectorAll("[data-flux-notes]")) {
-        const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+      for (const block of article.querySelectorAll("[data-kb25-notes]")) {
+        const ids = (block.getAttribute("data-kb25-notes") || "").split(" ").filter(Boolean);
         if (ids.indexOf(id) >= 0) {
           anchor = block.querySelector(".note-pin");
           break;
@@ -3077,8 +3077,8 @@ const NOTES_SCRIPT = `
 
     const pin = target.closest("[data-note-pin]");
     if (pin) {
-      const block = pin.closest("[data-flux-notes]");
-      const ids = (block.getAttribute("data-flux-notes") || "").split(" ").filter(Boolean);
+      const block = pin.closest("[data-kb25-notes]");
+      const ids = (block.getAttribute("data-kb25-notes") || "").split(" ").filter(Boolean);
       openPopover(pin, ids);
       return;
     }
@@ -3596,7 +3596,7 @@ body.dragging-page .space-current{
    Only annotated blocks become positioning contexts, so an unannotated page
    lays out exactly as it did before this feature existed. The pin sits in the
    left padding of .content (40px, 20px on mobile) — hence the two offsets. */
-.prose [data-flux-notes]{position:relative}
+.prose [data-kb25-notes]{position:relative}
 /* A task, a highlight and an agent note each carry their own palette on the
    element, so every rule below stays kind-agnostic and a remark keeps the teal it
    always had. Leaf elements only: swapping the tokens on a container would leak

@@ -45,7 +45,7 @@ test("a question that also calls a tool is not a clarifying signal", async () =>
       uuid: "a1",
       parentUuid: "u1",
       text: ["Should I search everywhere?"],
-      toolUses: [{ id: "c1", name: "mcp__flux-kb__kb_search" }],
+      toolUses: [{ id: "c1", name: "mcp__kb25__kb_search" }],
     }),
   ]);
 
@@ -108,8 +108,8 @@ test("flux tool calls are extracted with commit SHA and ok status from results",
       uuid: "a1",
       parentUuid: "u1",
       toolUses: [
-        { id: "c1", name: "mcp__flux-kb__kb_update_page", input: { slug: "flux/x" } },
-        { id: "c2", name: "mcp__flux-kb__kb_get_page", input: { slug: "nope" } },
+        { id: "c1", name: "mcp__kb25__kb_update_page", input: { slug: "flux/x" } },
+        { id: "c2", name: "mcp__kb25__kb_get_page", input: { slug: "nope" } },
       ],
     }),
     userToolResult(
@@ -121,16 +121,16 @@ test("flux tool calls are extracted with commit SHA and ok status from results",
     ),
   ]);
 
-  const calls = byKind(events, "flux_tool_call");
+  const calls = byKind(events, "kb25_tool_call");
   assert.equal(calls.length, 2);
 
-  const update = calls.find((c) => c.name === "mcp__flux-kb__kb_update_page");
+  const update = calls.find((c) => c.name === "mcp__kb25__kb_update_page");
   assert.ok(update);
   assert.equal(update!.ok, true);
   assert.equal(update!.commit, "abc1234");
   assert.equal(update!.space, "flux");
 
-  const get = calls.find((c) => c.name === "mcp__flux-kb__kb_get_page");
+  const get = calls.find((c) => c.name === "mcp__kb25__kb_get_page");
   assert.ok(get);
   assert.equal(get!.ok, false);
   assert.equal(get!.commit, undefined);
@@ -152,7 +152,7 @@ test("deriveSpace reads the space from a slug, parent, space arg, or result", ()
   assert.equal(deriveSpace({}, "[]"), undefined);
 });
 
-test("non-flux tools are ignored and a reasoning trace is assembled in order", async () => {
+test("non-kb25 tools are ignored and a reasoning trace is assembled in order", async () => {
   const events = await eventsFor([
     userPrompt("go", { uuid: "u1" }),
     assistant({
@@ -164,7 +164,7 @@ test("non-flux tools are ignored and a reasoning trace is assembled in order", a
     }),
   ]);
 
-  assert.equal(byKind(events, "flux_tool_call").length, 0);
+  assert.equal(byKind(events, "kb25_tool_call").length, 0);
   const [reasoning] = byKind(events, "reasoning");
   assert.deepEqual(
     reasoning.blocks.map((b) => `${b.kind}:${b.text}`),

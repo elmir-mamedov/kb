@@ -27,7 +27,7 @@ function refused(result: { ok: boolean } & Record<string, unknown>) {
 test("an added note sits directly above the block its quote is in", () => {
   const result = added(page, "the rolling restart script", "Renamed from restart.sh.");
   const lines = result.body.split("\n");
-  assert.equal(lines[0], "<!-- flux:note id=" + result.note.id + " kind=agent at=2026-09-10T12:00:00Z by=agent");
+  assert.equal(lines[0], "<!-- kb25:note id=" + result.note.id + " kind=agent at=2026-09-10T12:00:00Z by=agent");
   assert.equal(lines[1], "> the rolling restart script");
   assert.equal(lines[3], "Renamed from restart.sh.");
   // The comment abuts the block it annotates, with no blank line between.
@@ -126,7 +126,7 @@ test("resolving an id that is not there says so instead of succeeding", () => {
 test("a hand-written agent note resolves by its positional id", () => {
   // Nothing may assume an agent note came from addAgentNote: a person can write
   // one in the raw editor, where it gets no id= and no timestamp at all.
-  const body = "<!-- flux:note kind=agent\nHand-written.\n-->\n" + page;
+  const body = "<!-- kb25:note kind=agent\nHand-written.\n-->\n" + page;
   const parsed = parseNotes(body);
   assert.equal(parsed[0].id, "@0");
   const gone = resolveAgentNote(body, "@0");

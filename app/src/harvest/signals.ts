@@ -8,16 +8,18 @@ import type { Task } from "./segmenter.js";
 import type { NormalizedTurn, Session } from "./transcript-types.js";
 
 /**
- * Flux's MCP tools reach a transcript under more than one prefix: `flux-kb`
- * registered directly, and `plugin_flux_flux-kb` when the same server arrives
- * through the Claude Code plugin. Matching only the bare form silently dropped
+ * KB25's MCP tools reach a transcript under more than one prefix: `kb25`
+ * registered directly, and `plugin_kb25_kb25` when the same server arrives
+ * through the Claude Code plugin. The server was `flux-kb` before the rename,
+ * and transcripts already on disk still carry that prefix, so both are matched.
+ * Matching only the bare form silently dropped
  * every plugin-routed call from the harvest, which then understated tool usage
  * in exactly the data used to justify tooling changes.
  */
-const FLUX_TOOL_PATTERN = /^mcp__(?:plugin_[A-Za-z0-9_]+_)?flux-kb__/;
+const KB25_TOOL_PATTERN = /^mcp__(?:plugin_[A-Za-z0-9_]+_)?(?:kb25|flux-kb)__/;
 
-function isFluxTool(name: string): boolean {
-  return FLUX_TOOL_PATTERN.test(name);
+function isKb25Tool(name: string): boolean {
+  return KB25_TOOL_PATTERN.test(name);
 }
 
 const ASK_USER_TOOL = "AskUserQuestion";
@@ -31,7 +33,7 @@ export interface SignalOptions {
 /**
  * Extract the harvest events for a whole session's worth of tasks. Emits, per
  * task: one `task` rollup, one `reasoning` trace, zero+ `clarifying_question`s,
- * and zero+ `flux_tool_call`s (main-line and subagent turns alike).
+ * and zero+ `kb25_tool_call`s (main-line and subagent turns alike).
  */
 export function extractSignals(
   session: Session,
@@ -44,7 +46,7 @@ export function extractSignals(
     const reasoning = reasoningEvent(task, opts);
     if (reasoning) events.push(reasoning);
     events.push(...clarifyingEvents(task, opts));
-    events.push(...fluxToolCallEvents(session, task, opts));
+    events.push(...kb25ToolCallEvents(session, task, opts));
   }
   return events;
 }
@@ -90,13 +92,13 @@ function taskEvent(session: Session, task: Task, opts: SignalOptions): HarvestEv
   };
 }
 
-/** Distinct KB spaces the task's flux-kb actions touched, first-seen order. */
+/** Distinct KB spaces the task's kb25 actions touched, first-seen order. */
 function taskSpaces(session: Session, task: Task): string[] {
   const spaces: string[] = [];
   for (const turn of [...task.turns, ...task.sidechainTurns]) {
     if (turn.role !== "assistant") continue;
     for (const toolUse of turn.toolUses) {
-      if (!isFluxTool(toolUse.name)) continue;
+      if (!isKb25Tool(toolUse.name)) continue;
       const result = session.resultByToolUseId.get(toolUse.id);
       const space = deriveSpace(toolUse.input, result?.text);
       if (space && !spaces.includes(space)) spaces.push(space);
@@ -198,7 +200,7 @@ function clarifyingEvents(task: Task, opts: SignalOptions): HarvestEvent[] {
   return events;
 }
 
-function fluxToolCallEvents(
+function kb25ToolCallEvents(
   session: Session,
   task: Task,
   opts: SignalOptions
@@ -208,14 +210,14 @@ function fluxToolCallEvents(
   for (const turn of turns) {
     if (turn.role !== "assistant") continue;
     for (const toolUse of turn.toolUses) {
-      if (!isFluxTool(toolUse.name)) continue;
+      if (!isKb25Tool(toolUse.name)) continue;
       const result = session.resultByToolUseId.get(toolUse.id);
       events.push({
         ...turnBase(task.sessionId, task.taskId, turn),
         emittedAt: opts.emittedAt,
         toolUseId: toolUse.id,
         commit: result ? extractCommit(result.text) : undefined,
-        kind: "flux_tool_call",
+        kind: "kb25_tool_call",
         name: toolUse.name,
         input: toolUse.input,
         ok: result ? !result.isError : false,
@@ -280,7 +282,7 @@ function extractCommit(resultText: string): string | undefined {
 }
 
 /**
- * Which KB space a `mcp__flux-kb__*` call operated on. Every page slug starts
+ * Which KB space a `mcp__kb25__*` call operated on. Every page slug starts
  * with its space (`engineering/runbooks/deploy` → `engineering`), so we read the
  * space from whichever slug-bearing argument the tool used, falling back to the
  * `slug` in the tool's result (covers `kb_create_space`, whose input is a title).

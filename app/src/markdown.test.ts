@@ -177,15 +177,15 @@ test("external image URLs accept a size and are not asset-rewritten", () => {
   assert.match(html, /width="320"/);
 });
 
-/** A `flux:note` comment as it appears on disk, with the given text. */
+/** A `kb25:note` comment as it appears on disk, with the given text. */
 const noteComment = (id: string, text: string, quote?: string) =>
-  ["<!-- flux:note id=" + id + " kind=task", ...(quote ? ["> " + quote, ""] : []), text, "-->"].join(
+  ["<!-- kb25:note id=" + id + " kind=task", ...(quote ? ["> " + quote, ""] : []), text, "-->"].join(
     "\n"
   );
 
-test("a flux:note comment renders nothing, not escaped text", () => {
+test("a kb25:note comment renders nothing, not escaped text", () => {
   const html = render(noteComment("aaa", "Fix this.", "the phrase") + "\nAnnotated paragraph.\n");
-  assert.doesNotMatch(html, /flux:note/);
+  assert.doesNotMatch(html, /kb25:note/);
   assert.doesNotMatch(html, /&lt;!--/);
   assert.doesNotMatch(html, /Fix this\./);
   assert.match(html, /Annotated paragraph\./);
@@ -196,14 +196,14 @@ test("the block below a note carries its id, and every top-level block is anchor
   // The heading also carries its section id and copy affordance; what matters
   // here is that the source anchors survive alongside them.
   assert.match(html, /<h1 data-src-line="0" data-src-hash="[0-9a-f]{8}" id="title">Title</);
-  assert.match(html, /<p data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-flux-notes="aaa">/);
+  assert.match(html, /<p data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-kb25-notes="aaa">/);
 });
 
 test("two notes stacked on one block are both listed on it", () => {
   const html = render(
     noteComment("aaa", "First.") + "\n" + noteComment("bbb", "Second.") + "\nParagraph.\n"
   );
-  assert.match(html, /data-flux-notes="aaa bbb"/);
+  assert.match(html, /data-kb25-notes="aaa bbb"/);
 });
 
 test("a note whose text contains --- is not parsed as a setext heading", () => {
@@ -211,13 +211,13 @@ test("a note whose text contains --- is not parsed as a setext heading", () => {
   // this only works because the note rule is registered first in the chain.
   const html = render(noteComment("aaa", "Before\n---\nAfter") + "\nParagraph.\n");
   assert.doesNotMatch(html, /<h2/);
-  assert.doesNotMatch(html, /flux:note/);
-  assert.match(html, /<p data-src-line="\d+"[^>]*data-flux-notes="aaa">Paragraph\.<\/p>/);
+  assert.doesNotMatch(html, /kb25:note/);
+  assert.match(html, /<p data-src-line="\d+"[^>]*data-kb25-notes="aaa">Paragraph\.<\/p>/);
 });
 
 test("an unterminated note comment renders as text instead of eating the page", () => {
-  const html = render("<!-- flux:note id=aaa kind=task\nnever closed\n\nReal content.\n");
-  assert.match(html, /&lt;!-- flux:note/);
+  const html = render("<!-- kb25:note id=aaa kind=task\nnever closed\n\nReal content.\n");
+  assert.match(html, /&lt;!-- kb25:note/);
   assert.match(html, /Real content\./);
 });
 
@@ -228,8 +228,8 @@ test("an ordinary HTML comment still renders escaped, unchanged", () => {
 
 test("a note written inside a list annotates the whole list", () => {
   const html = render("- one\n- two\n\n  " + noteComment("aaa", "Fix.").replace(/\n/g, "\n  ") + "\n");
-  assert.doesNotMatch(html, /flux:note/);
-  assert.match(html, /<ul data-src-line="0"[^>]*data-flux-notes="aaa">/);
+  assert.doesNotMatch(html, /kb25:note/);
+  assert.match(html, /<ul data-src-line="0"[^>]*data-kb25-notes="aaa">/);
 });
 
 test("a note between the items of a tight list does not merge them", () => {
@@ -239,7 +239,7 @@ test("a note between the items of a tight list does not merge them", () => {
 
 test("code fences carry the anchor on the <pre>, not the inner <code>", () => {
   const html = render(noteComment("aaa", "Wrong flag.") + "\n```sh\nls -a\n```\n");
-  assert.match(html, /<pre data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-flux-notes="aaa">/);
+  assert.match(html, /<pre data-src-line="\d+" data-src-hash="[0-9a-f]{8}" data-kb25-notes="aaa">/);
   assert.match(html, /<code class="language-sh">/);
 });
 
@@ -478,8 +478,8 @@ test("a pin containing -- is still removed from the rendered heading", () => {
 
 test("a heading cannot take an id the page already uses for something else", () => {
   // getElementById returns the first match in document order, and every heading
-  // precedes layout()'s own <div id="flux-notes">.
-  assert.match(render("## Flux notes\n"), /<h2[^>]* id="flux-notes-2">/);
+  // precedes layout()'s own <div id="kb25-notes">.
+  assert.match(render("## KB25 notes\n"), /<h2[^>]* id="kb25-notes-2">/);
 });
 
 test("a section's text is what the reader sees, not the raw source", () => {
@@ -498,7 +498,7 @@ test("rendering parks the same sections on env that extractSections reports", ()
   const body = "## One\n\n### Two\n\n## One\n";
   const env: Record<string, unknown> = {};
   createRenderer(() => undefined, "flux/page").render(body, env);
-  assert.deepEqual(env.fluxSections, extractSections(body));
+  assert.deepEqual(env.kb25Sections, extractSections(body));
 });
 
 // --- locating a quote --------------------------------------------------------

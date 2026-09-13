@@ -12,7 +12,7 @@ import { parsePage } from "./frontmatter.js";
  * another English; one a dry technical register, another narrative. Repeating
  * that in every session is the friction this removes. It deliberately does not
  * live in a global CLAUDE.md — the constraint only matters while an agent is
- * inside a Flux space, and loading every space's rules into unrelated sessions
+ * inside a KB25 space, and loading every space's rules into unrelated sessions
  * is the pollution to avoid.
  *
  * The text lives at `kb/<space>/_instructions.md`. The `_` prefix means
