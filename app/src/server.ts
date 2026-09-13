@@ -209,13 +209,15 @@ function sign(value: string): string {
     .digest("base64url");
 }
 
+/**
+ * Constant-time string comparison. Both sides are digested first so the compare
+ * always runs over two 32-byte buffers: `timingSafeEqual` throws on a length
+ * mismatch, and short-circuiting on one would time out the secret's length.
+ */
 function timingSafeEqualString(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return (
-    leftBuffer.length === rightBuffer.length &&
-    crypto.timingSafeEqual(leftBuffer, rightBuffer)
-  );
+  const digest = (value: string) =>
+    crypto.createHash("sha256").update(value, "utf8").digest();
+  return crypto.timingSafeEqual(digest(left), digest(right));
 }
 
 function createSession(username: string): string {
@@ -746,7 +748,12 @@ app.post("/_login", async (req, reply) => {
   const gate = loginThrottle.check(req.ip);
   if (!gate.allowed) return lockedOut(gate.retryAfterSeconds);
 
-  if (username === AUTH_USERNAME && password === AUTH_PASSWORD) {
+  // Both compared, and neither with `===`: `&&` would skip the password check on
+  // a wrong username, timing out which half was wrong, and a plain `===` returns
+  // as soon as two bytes differ, timing out how much of a guess was right.
+  const usernameOk = timingSafeEqualString(username, AUTH_USERNAME);
+  const passwordOk = timingSafeEqualString(password, AUTH_PASSWORD);
+  if (usernameOk && passwordOk) {
     loginThrottle.recordSuccess(req.ip);
     return reply
       .header("set-cookie", sessionCookie(createSession(username), req))
