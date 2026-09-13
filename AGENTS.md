@@ -46,4 +46,4 @@ Pull requests should include a short summary, verification steps, affected paths
 
 ## Security & Configuration Tips
 
-Configuration is via environment variables: `KB_DIR`, `PORT`, `HOST`, and `SITE_TITLE`. The default `HOST=localhost` binds loopback only, so the viewer is reachable from this machine and nowhere else; set `HOST=0.0.0.0` deliberately to expose it on the LAN. Do not commit secrets from `.env`.
+Configuration is via environment variables: `KB_DIR`, `PORT`, `HOST`, `SITE_TITLE`, the required `AUTH_USERNAME` / `AUTH_PASSWORD` / `AUTH_SESSION_SECRET`, and the optional `TRUST_PROXY`. The default `HOST=localhost` binds loopback only, so the viewer is reachable from this machine and nowhere else; keep it there. Sign-in is one static credential pair behind a failed-attempt cooldown, so a wider bind publishes a guessable form, in cleartext unless something in front of it terminates TLS. Do not commit secrets from `.env`.
