@@ -101,20 +101,20 @@ test("token usage is summed and models are collected distinctly per task", async
   assert.deepEqual(task.usage.models, ["claude-opus-4-8"]);
 });
 
-test("flux tool calls are extracted with commit SHA and ok status from results", async () => {
+test("kb25 tool calls are extracted with commit SHA and ok status from results", async () => {
   const events = await eventsFor([
     userPrompt("edit a page", { uuid: "u1" }),
     assistant({
       uuid: "a1",
       parentUuid: "u1",
       toolUses: [
-        { id: "c1", name: "mcp__kb25__kb_update_page", input: { slug: "flux/x" } },
+        { id: "c1", name: "mcp__kb25__kb_update_page", input: { slug: "kb25/x" } },
         { id: "c2", name: "mcp__kb25__kb_get_page", input: { slug: "nope" } },
       ],
     }),
     userToolResult(
       [
-        { toolUseId: "c1", content: '{"updated":true,"slug":"flux/x","commit":"abc1234"}' },
+        { toolUseId: "c1", content: '{"updated":true,"slug":"kb25/x","commit":"abc1234"}' },
         { toolUseId: "c2", content: "not found", isError: true },
       ],
       { uuid: "u2", parentUuid: "a1" }
@@ -128,7 +128,7 @@ test("flux tool calls are extracted with commit SHA and ok status from results",
   assert.ok(update);
   assert.equal(update!.ok, true);
   assert.equal(update!.commit, "abc1234");
-  assert.equal(update!.space, "flux");
+  assert.equal(update!.space, "kb25");
 
   const get = calls.find((c) => c.name === "mcp__kb25__kb_get_page");
   assert.ok(get);
@@ -138,14 +138,14 @@ test("flux tool calls are extracted with commit SHA and ok status from results",
 
   // The task rollup lists the distinct spaces it touched.
   const [task] = byKind(events, "task");
-  assert.deepEqual(task.spaces, ["flux", "nope"]);
+  assert.deepEqual(task.spaces, ["kb25", "nope"]);
 });
 
 test("deriveSpace reads the space from a slug, parent, space arg, or result", () => {
   assert.equal(deriveSpace({ slug: "engineering/runbooks/deploy" }), "engineering");
-  assert.equal(deriveSpace({ sourceSlug: "flux/logging" }), "flux");
+  assert.equal(deriveSpace({ sourceSlug: "kb25/logging" }), "kb25");
   assert.equal(deriveSpace({ parent: "release-notes-2/notes" }), "release-notes-2");
-  assert.equal(deriveSpace({ space: "flux" }), "flux");
+  assert.equal(deriveSpace({ space: "kb25" }), "kb25");
   // kb_create_space passes a title, not a slug — fall back to the result's slug.
   assert.equal(deriveSpace({ title: "Marketing" }, '{"created":true,"slug":"marketing"}'), "marketing");
   // No space-bearing argument and no usable result (e.g. kb_list_spaces).

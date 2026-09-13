@@ -7,9 +7,9 @@ import { makeGit } from "./git.js";
 import { makeTempKb, pathExists, type TempKb } from "./test-helpers.js";
 
 test("issue #3: downloadFilename uses the slug leaf plus .md", () => {
-  assert.equal(downloadFilename("flux/backlog/issues"), "issues.md");
-  assert.equal(downloadFilename("flux"), "flux.md");
-  assert.equal(downloadFilename("/flux/notes/"), "notes.md");
+  assert.equal(downloadFilename("kb25/backlog/issues"), "issues.md");
+  assert.equal(downloadFilename("kb25"), "kb25.md");
+  assert.equal(downloadFilename("/kb25/notes/"), "notes.md");
   assert.equal(downloadFilename(""), "page.md");
 });
 

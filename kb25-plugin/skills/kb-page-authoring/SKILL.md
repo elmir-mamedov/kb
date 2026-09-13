@@ -51,12 +51,12 @@ Then stop. Do **not** restate the sections, summarize the content, list "here's 
 
 Good:
 ```
-Created **Deploy rollback runbook** → /flux/engineering/deploy-rollback
+Created **Deploy rollback runbook** → /kb25/engineering/deploy-rollback
 ```
 
 Good (a real caveat worth one clause):
 ```
-Created **Q3 pricing** → /flux/sales/q3-pricing — filed under sales/; move it if you'd rather it live under finance/.
+Created **Q3 pricing** → /kb25/sales/q3-pricing — filed under sales/; move it if you'd rather it live under finance/.
 ```
 
 Bad (the failure this skill exists to prevent):

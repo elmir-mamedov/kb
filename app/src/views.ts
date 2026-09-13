@@ -466,7 +466,7 @@ function actionForm(actionPrefix: string, slug: string, label: string, variant: 
 
 /**
  * Page-header "Copy link" button. Copies the page's relative address — the slug,
- * which starts with the space key and ends with the leaf (e.g. `flux/backlog`).
+ * which starts with the space key and ends with the leaf (e.g. `kb25/backlog`).
  * `data-copy-slug` carries the value copied by the delegated `COPY_LINK_SCRIPT`
  * handler; `data-copy-link` marks it as the current page's button so the
  * keyboard shortcut can find it.
@@ -737,7 +737,7 @@ function statCard(value: string, label: string): string {
 
 /**
  * A note's handle for pasting into a chat: the page it lives on and the note's
- * own id, e.g. `flux/idea#7uribe42`.
+ * own id, e.g. `kb25/idea#7uribe42`.
  *
  * The bare id is what the reader sees on the row, but it is not what gets copied.
  * An agent handed `7uribe42` alone has to sweep every note in the KB to find it,
@@ -1266,7 +1266,7 @@ const EDIT_SHORTCUT_SCRIPT = `
 /**
  * Copy-to-clipboard for anything addressable. Mostly a page's relative address —
  * its slug, which starts with the space key and ends with the leaf (e.g.
- * `flux/backlog`) — so the copied string lives in `data-copy-slug`. Four entry
+ * `kb25/backlog`) — so the copied string lives in `data-copy-slug`. Four entry
  * points share this one handler:
  *   1. Cmd/Ctrl+Shift+L copies the page being viewed.
  *   2. The sidebar ⋯ menu's "Copy link" copies that row's slug.

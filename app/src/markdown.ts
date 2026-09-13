@@ -970,8 +970,8 @@ export function createRenderer(
   md.inline.ruler.at("image", imageWithSize);
 
   // Rewrite relative `_assets/…` references (images and attachment links such
-  // as PDFs) to the current page's space, e.g. `_assets/diagram.png` on a `flux`
-  // page → `/flux/_assets/diagram.png`. Portable across space renames.
+  // as PDFs) to the current page's space, e.g. `_assets/diagram.png` on a `kb25`
+  // page → `/kb25/_assets/diagram.png`. Portable across space renames.
   const spaceKey = currentSlug.split("/")[0] ?? "";
   rewriteAttr(md, "image", "src", spaceKey);
   rewriteAttr(md, "link_open", "href", spaceKey);

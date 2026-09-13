@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
  * every auto-commit. This is what lets one person work the same knowledge base
  * from several machines — pull, read/write, push — without any manual git.
  *
- * Deliberately temporary. `flux/knowledge-base-plan/multi-machine-sync-one-user-many-machines.md`
+ * Deliberately temporary. `kb25/knowledge-base-plan/multi-machine-sync-one-user-many-machines.md`
  * settles on a central, git-backed host instead, at which point clients stop
  * cloning and this module is deleted outright. It is therefore kept to one file
  * plus a single callback in {@link makeGit}, so removing it later is a clean cut.
@@ -49,7 +49,7 @@ export interface Sync {
  * Two rules shape the implementation and are load-bearing:
  *
  * - **Never log to stdout.** `mcp.ts` speaks JSON-RPC over stdio, and
- *   `flux/install-mcp-on-new-machine.md` records how stray stdout lines corrupt
+ *   `kb25/install-mcp-on-new-machine.md` records how stray stdout lines corrupt
  *   that stream. Warnings go to stderr.
  * - **Never leave a repo mid-rebase.** The app auto-commits, so a half-finished
  *   rebase would silently compound into a real mess on the next save.

@@ -11,7 +11,7 @@ import {
 
 /** Render Markdown with a renderer scoped to a representative page slug. */
 const render = (src: string) =>
-  createRenderer(() => undefined, "flux/page").render(src);
+  createRenderer(() => undefined, "kb25/page").render(src);
 
 test("```mermaid fences render as a Mermaid container, not a code block", () => {
   const html = render("```mermaid\nflowchart LR\n  a --> b\n```\n");
@@ -42,12 +42,12 @@ test("non-mermaid code fences are still syntax-highlighted", () => {
 
 test("[[id:<id>]] resolves to the target's current slug and title", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/moved-here" ? "Moved Page" : undefined),
-    "flux/page",
-    (id) => (id === "abc123" ? "flux/moved-here" : undefined)
+    (slug) => (slug === "kb25/moved-here" ? "Moved Page" : undefined),
+    "kb25/page",
+    (id) => (id === "abc123" ? "kb25/moved-here" : undefined)
   );
   const html = md.render("See [[id:abc123]].");
-  assert.match(html, /href="\/flux\/moved-here"/);
+  assert.match(html, /href="\/kb25\/moved-here"/);
   assert.match(html, /class="wikilink"/);
   assert.match(html, />Moved Page</);
 });
@@ -55,16 +55,16 @@ test("[[id:<id>]] resolves to the target's current slug and title", () => {
 test("[[id:<id>|Label]] keeps the explicit label", () => {
   const md = createRenderer(
     () => "Real Title",
-    "flux/page",
-    (id) => (id === "abc123" ? "flux/target" : undefined)
+    "kb25/page",
+    (id) => (id === "abc123" ? "kb25/target" : undefined)
   );
   const html = md.render("[[id:abc123|Custom Label]]");
-  assert.match(html, /href="\/flux\/target"/);
+  assert.match(html, /href="\/kb25\/target"/);
   assert.match(html, />Custom Label</);
 });
 
 test("[[id:<id>]] with an unknown id renders a non-crashing broken link", () => {
-  const md = createRenderer(() => undefined, "flux/page", () => undefined);
+  const md = createRenderer(() => undefined, "kb25/page", () => undefined);
   const html = md.render("[[id:ghost|Gone]]");
   assert.match(html, /class="wikilink broken"/);
   assert.match(html, />Gone</);
@@ -72,20 +72,20 @@ test("[[id:<id>]] with an unknown id renders a non-crashing broken link", () => 
 
 test("slug-based [[wiki-links]] still resolve when no id resolver is given", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/other" ? "Other" : undefined),
-    "flux/page"
+    (slug) => (slug === "kb25/other" ? "Other" : undefined),
+    "kb25/page"
   );
-  const html = md.render("[[flux/other]]");
-  assert.match(html, /href="\/flux\/other"/);
+  const html = md.render("[[kb25/other]]");
+  assert.match(html, /href="\/kb25\/other"/);
   assert.match(html, />Other</);
 });
 
 /** A renderer with one id-addressable page, for the table tests below. */
 const tableRenderer = () =>
   createRenderer(
-    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
-    "flux/page",
-    (id) => (id === "abc123" ? "flux/ledger" : undefined)
+    (slug) => (slug === "kb25/ledger" ? "Ledger" : undefined),
+    "kb25/page",
+    (id) => (id === "abc123" ? "kb25/ledger" : undefined)
   );
 
 test("a wiki-link's label pipe inside a table cell is not read as a cell boundary", () => {
@@ -95,7 +95,7 @@ test("a wiki-link's label pipe inside a table cell is not read as a cell boundar
   // The whole cell survives: before the fix it ended at "[[id:abc123", and the
   // remainder landed in a third column the header does not have, so it was
   // dropped outright.
-  assert.match(html, /<td>a historical <a href="\/flux\/ledger" class="wikilink">ledger<\/a> in Postgres<\/td>/);
+  assert.match(html, /<td>a historical <a href="\/kb25\/ledger" class="wikilink">ledger<\/a> in Postgres<\/td>/);
   assert.doesNotMatch(html, /\[\[/);
 });
 
@@ -103,16 +103,16 @@ test("a hand-escaped `\\|` in a table cell renders the same, without a stray bac
   const html = tableRenderer().render(
     "| A | B |\n| --- | --- |\n| x | see [[id:abc123\\|the ledger]] |\n"
   );
-  assert.match(html, /<td>see <a href="\/flux\/ledger" class="wikilink">the ledger<\/a><\/td>/);
+  assert.match(html, /<td>see <a href="\/kb25\/ledger" class="wikilink">the ledger<\/a><\/td>/);
   assert.doesNotMatch(html, /\\/);
 });
 
 test("slug wiki-links and table headers get the same treatment as id links", () => {
   const html = tableRenderer().render(
-    "| Page [[flux/ledger|H]] | B |\n| --- | --- |\n| [[flux/ledger|the ledger]] | y |\n"
+    "| Page [[kb25/ledger|H]] | B |\n| --- | --- |\n| [[kb25/ledger|the ledger]] | y |\n"
   );
-  assert.match(html, /<th>Page <a href="\/flux\/ledger" class="wikilink">H<\/a><\/th>/);
-  assert.match(html, /<td><a href="\/flux\/ledger" class="wikilink">the ledger<\/a><\/td>/);
+  assert.match(html, /<th>Page <a href="\/kb25\/ledger" class="wikilink">H<\/a><\/th>/);
+  assert.match(html, /<td><a href="\/kb25\/ledger" class="wikilink">the ledger<\/a><\/td>/);
 });
 
 test("a pipe outside a wiki-link still splits cells, and one in prose is untouched", () => {
@@ -120,7 +120,7 @@ test("a pipe outside a wiki-link still splits cells, and one in prose is untouch
     "| A | B |\n| --- | --- |\n| x | y |\n\nProse with a | pipe and [[id:abc123|a link]].\n"
   );
   assert.match(html, /<td>x<\/td>\n<td>y<\/td>/);
-  assert.match(html, /<p[^>]*>Prose with a \| pipe and <a href="\/flux\/ledger" class="wikilink">a link<\/a>\.<\/p>/);
+  assert.match(html, /<p[^>]*>Prose with a \| pipe and <a href="\/kb25\/ledger" class="wikilink">a link<\/a>\.<\/p>/);
 });
 
 test("a table-shaped code sample keeps its wiki-link pipe verbatim", () => {
@@ -142,12 +142,12 @@ test("escaping table pipes leaves a block's source anchor pointing at the stored
 
 test("images render without size attributes by default", () => {
   const html = render("![Diagram](_assets/pic.png)");
-  assert.match(html, /<img src="\/flux\/_assets\/pic\.png" alt="Diagram">/);
+  assert.match(html, /<img src="\/kb25\/_assets\/pic\.png" alt="Diagram">/);
 });
 
 test("`=WxH` sets width only when height is omitted", () => {
   const html = render("![Diagram](_assets/pic.png =600x)");
-  assert.match(html, /src="\/flux\/_assets\/pic\.png"/); // asset rewrite still applies
+  assert.match(html, /src="\/kb25\/_assets\/pic\.png"/); // asset rewrite still applies
   assert.match(html, /width="600"/);
   assert.doesNotMatch(html, /height=/);
   assert.doesNotMatch(html, /=600x/); // spec consumed, not left in the URL
@@ -366,14 +366,14 @@ test("each heading carries a copy affordance addressed to the current page", () 
   const html = render("## Rate limits\n");
   assert.match(
     html,
-    /<a class="section-link" href="#rate-limits" data-copy-slug="flux\/page#rate-limits" data-copy-label="Section link"/
+    /<a class="section-link" href="#rate-limits" data-copy-slug="kb25\/page#rate-limits" data-copy-label="Section link"/
   );
 });
 
 test("a non-ASCII anchor is percent-encoded in href but readable in what is copied", () => {
   const html = render("## 一句话\n");
   assert.match(html, /href="#%E4%B8%80%E5%8F%A5%E8%AF%9D"/);
-  assert.match(html, /data-copy-slug="flux\/page#一句话"/);
+  assert.match(html, /data-copy-slug="kb25\/page#一句话"/);
 });
 
 test("extractSections reports the same anchors the renderer stamps", () => {
@@ -410,25 +410,25 @@ test("a # line inside a fence is code, not a section", () => {
 
 test("[[slug#section]] resolves the page and keeps the fragment", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
-    "flux/page"
+    (slug) => (slug === "kb25/ledger" ? "Ledger" : undefined),
+    "kb25/page"
   );
-  const html = md.render("See [[flux/ledger#retention]].");
-  assert.match(html, /<a href="\/flux\/ledger#retention" class="wikilink">Ledger<\/a>/);
+  const html = md.render("See [[kb25/ledger#retention]].");
+  assert.match(html, /<a href="\/kb25\/ledger#retention" class="wikilink">Ledger<\/a>/);
 });
 
 test("[[id:<id>#section]] resolves the id and keeps the fragment", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/moved-here" ? "Moved Page" : undefined),
-    "flux/page",
-    (id) => (id === "abc123" ? "flux/moved-here" : undefined)
+    (slug) => (slug === "kb25/moved-here" ? "Moved Page" : undefined),
+    "kb25/page",
+    (id) => (id === "abc123" ? "kb25/moved-here" : undefined)
   );
   const html = md.render("See [[id:abc123#retention|the rules]].");
-  assert.match(html, /<a href="\/flux\/moved-here#retention" class="wikilink">the rules<\/a>/);
+  assert.match(html, /<a href="\/kb25\/moved-here#retention" class="wikilink">the rules<\/a>/);
 });
 
 test("an unknown id with a fragment still renders as visibly broken", () => {
-  const md = createRenderer(() => undefined, "flux/page", () => undefined);
+  const md = createRenderer(() => undefined, "kb25/page", () => undefined);
   const html = md.render("See [[id:nope#retention]].");
   assert.match(html, /class="wikilink broken"/);
   assert.match(html, /href="\/id:nope#retention"/);
@@ -436,21 +436,21 @@ test("an unknown id with a fragment still renders as visibly broken", () => {
 
 test("a fragment on a bare wiki-link does not become part of the page name", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
-    "flux/page"
+    (slug) => (slug === "kb25/ledger" ? "Ledger" : undefined),
+    "kb25/page"
   );
   const html = md.render("See [[ledger#retention]].");
-  assert.match(html, /href="\/flux\/ledger#retention"/);
+  assert.match(html, /href="\/kb25\/ledger#retention"/);
 });
 
 test("a non-ASCII fragment is encoded in the href", () => {
   const md = createRenderer(
-    (slug) => (slug === "flux/ledger" ? "Ledger" : undefined),
-    "flux/page"
+    (slug) => (slug === "kb25/ledger" ? "Ledger" : undefined),
+    "kb25/page"
   );
   assert.match(
-    md.render("[[flux/ledger#一句话]]"),
-    /href="\/flux\/ledger#%E4%B8%80%E5%8F%A5%E8%AF%9D"/
+    md.render("[[kb25/ledger#一句话]]"),
+    /href="\/kb25\/ledger#%E4%B8%80%E5%8F%A5%E8%AF%9D"/
   );
 });
 
@@ -497,7 +497,7 @@ test("the copy affordance is an empty element, so no glyph joins the heading tex
 test("rendering parks the same sections on env that extractSections reports", () => {
   const body = "## One\n\n### Two\n\n## One\n";
   const env: Record<string, unknown> = {};
-  createRenderer(() => undefined, "flux/page").render(body, env);
+  createRenderer(() => undefined, "kb25/page").render(body, env);
   assert.deepEqual(env.kb25Sections, extractSections(body));
 });
 

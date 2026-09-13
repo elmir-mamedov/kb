@@ -353,7 +353,7 @@ server.registerTool(
     description:
       "Read a space's standing instructions: the space owner's rules for what you write there, how you answer questions about it, and any standing domain context. Returns the text plus the `spaceInstructionsToken` value the write tools require for that space. Call this before writing into a space you have not yet read from in this session. A person edits these in the KB25 web UI; the tools cannot change them.",
     inputSchema: {
-      space: z.string().min(1).describe("Space key — its top-level folder name, e.g. flux."),
+      space: z.string().min(1).describe("Space key — its top-level folder name, e.g. kb25."),
     },
     annotations: {
       readOnlyHint: true,
@@ -392,7 +392,7 @@ server.registerTool(
       space: z
         .string()
         .optional()
-        .describe("Limit to a single space (its top-level folder key, e.g. flux)."),
+        .describe("Limit to a single space (its top-level folder key, e.g. kb25)."),
     },
     annotations: {
       readOnlyHint: true,
@@ -500,7 +500,7 @@ server.registerTool(
       space: z
         .string()
         .optional()
-        .describe("Limit to a single space (its top-level folder key, e.g. flux)."),
+        .describe("Limit to a single space (its top-level folder key, e.g. kb25)."),
       kind: z
         .enum(["task", "remark", "highlight", "agent"])
         .optional()
@@ -551,7 +551,7 @@ server.registerTool(
       space: z
         .string()
         .optional()
-        .describe("Limit search to a single space (its top-level folder key, e.g. flux)."),
+        .describe("Limit search to a single space (its top-level folder key, e.g. kb25)."),
     },
     annotations: {
       readOnlyHint: true,
@@ -582,11 +582,11 @@ server.registerTool(
   {
     title: "Create KB Page",
     description:
-      "Create a new page from a title and Markdown body inside a space or page. The title becomes the page slug; a leaf-page parent is auto-promoted into a section. Every page must live inside a space, so the parent is required (a space key like `flux`, or a deeper page slug); use kb_create_space for a new space.",
+      "Create a new page from a title and Markdown body inside a space or page. The title becomes the page slug; a leaf-page parent is auto-promoted into a section. Every page must live inside a space, so the parent is required (a space key like `kb25`, or a deeper page slug); use kb_create_space for a new space.",
     inputSchema: {
       parent: z
         .string()
-        .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. A leaf parent becomes a section. Required; pages cannot be created at the root."),
+        .describe("Parent slug — a space key or deeper page, e.g. kb25 or kb25/runbooks. A leaf parent becomes a section. Required; pages cannot be created at the root."),
       title: z.string().min(1).describe("Page title; also slugified into the filename."),
       body: z.string().optional().describe("Markdown body (without frontmatter). Defaults to a heading."),
       tags: z.array(z.string()).optional().describe("Optional frontmatter tags."),
@@ -635,7 +635,7 @@ server.registerTool(
     inputSchema: {
       parent: z
         .string()
-        .describe("Parent slug — a space key or deeper page, e.g. flux or flux/runbooks. Required; folders cannot be created at the root."),
+        .describe("Parent slug — a space key or deeper page, e.g. kb25 or kb25/runbooks. Required; folders cannot be created at the root."),
       title: z.string().min(1).describe("Folder display name; also slugified into the (stable) folder URL."),
       spaceInstructionsToken: instructionTokenSchema,
     },
@@ -679,7 +679,7 @@ server.registerTool(
     description:
       "Change a folder's display name. Only the name changes — the folder's URL slug stays stable (use kb_move_page to relocate it). Applies to folders only; content pages use kb_update_page / kb_rename_page.",
     inputSchema: {
-      slug: z.string().min(1).describe("Folder slug, e.g. flux/runbooks."),
+      slug: z.string().min(1).describe("Folder slug, e.g. kb25/runbooks."),
       name: z.string().min(1).describe("New display name for the folder."),
       spaceInstructionsToken: instructionTokenSchema,
     },
@@ -1212,7 +1212,7 @@ async function main(): Promise<void> {
   await server.connect(transport);
   console.error(`kb25 MCP server running on stdio; KB_DIR=${KB_DIR}`);
   // Pull *after* connecting, never before: MCP clients enforce a startup timeout
-  // (10s by default per flux/install-mcp-on-new-machine.md), and blocking that on
+  // (10s by default per kb25/install-mcp-on-new-machine.md), and blocking that on
   // a network round-trip could stop the server coming up at all. A slightly stale
   // first tool call is the cheaper failure.
   void sync?.pullAll();

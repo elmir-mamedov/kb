@@ -45,7 +45,7 @@ export interface SearchOptions {
   filter?: TreeFilter;
   /** Maximum hits returned. Defaults to 10. */
   limit?: number;
-  /** Restrict to one space (its top-level folder key, e.g. "flux"). */
+  /** Restrict to one space (its top-level folder key, e.g. "kb25"). */
   space?: string;
 }
 

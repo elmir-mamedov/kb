@@ -31,11 +31,11 @@ function node(overrides: Partial<PageNode> & Pick<PageNode, "slug" | "title">): 
 function pageView(overrides: Partial<PageView> = {}): PageView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "KB25", archived: false }],
-    spaceKey: "flux",
+    spaces: [{ key: "kb25", title: "KB25", archived: false }],
+    spaceKey: "kb25",
     tree: [],
-    activeSlug: "flux/notes",
-    titles: new Map([["flux/notes", "Notes"]]),
+    activeSlug: "kb25/notes",
+    titles: new Map([["kb25/notes", "Notes"]]),
     title: "Notes",
     contentHtml: "<p>hi</p>",
     username: "alice",
@@ -64,7 +64,7 @@ function note(overrides: Partial<IndexedNote> = {}): IndexedNote {
     quote: "the workers",
     text: "restart them",
     line: 4,
-    page: { slug: "flux/deploy", title: "Deploy", fsPath: "/kb/flux/deploy.md" },
+    page: { slug: "kb25/deploy", title: "Deploy", fsPath: "/kb/kb25/deploy.md" },
     ...overrides,
   };
 }
@@ -72,14 +72,14 @@ function note(overrides: Partial<IndexedNote> = {}): IndexedNote {
 function dashboardView(overrides: Partial<DashboardView> = {}): DashboardView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "KB25", archived: false }],
-    spaceKey: "flux",
+    spaces: [{ key: "kb25", title: "KB25", archived: false }],
+    spaceKey: "kb25",
     tree: [],
-    titles: new Map([["flux", "KB25"]]),
+    titles: new Map([["kb25", "KB25"]]),
     spaceTitle: "KB25",
     groups: [
       {
-        slug: "flux/deploy",
+        slug: "kb25/deploy",
         title: "Deploy",
         notes: [note(), note({ id: "bbb22222", line: 20, text: "and the queue" })],
       },
@@ -98,7 +98,7 @@ function dashboardView(overrides: Partial<DashboardView> = {}): DashboardView {
 
 test("issue #1: page view carries the edit link + Cmd/Ctrl+E shortcut", () => {
   const html = layout(pageView());
-  assert.match(html, /href="\/_edit\/flux\/notes" data-edit-link/);
+  assert.match(html, /href="\/_edit\/kb25\/notes" data-edit-link/);
   // The shortcut script targets the edit link and binds the E key.
   assert.match(html, /querySelector\("\[data-edit-link\]"\)/);
   assert.match(html, /key\.toLowerCase\(\) !== "e"/);
@@ -120,15 +120,15 @@ test("issue #3: the page header exposes a Download-as-Markdown link", () => {
   const html = layout(pageView());
   assert.match(
     html,
-    /class="button secondary" href="\/_download\/flux\/notes" download>Download<\/a>/
+    /class="button secondary" href="\/_download\/kb25\/notes" download>Download<\/a>/
   );
 });
 
 test("issue #3: the sidebar ⋯ menu exposes a Download link", () => {
   const html = layout(
-    pageView({ tree: [node({ slug: "flux/guide", title: "Guide" })] })
+    pageView({ tree: [node({ slug: "kb25/guide", title: "Guide" })] })
   );
-  assert.match(html, /href="\/_download\/flux\/guide" download>Download<\/a>/);
+  assert.match(html, /href="\/_download\/kb25\/guide" download>Download<\/a>/);
 });
 
 test("issue #3: non-editable / rootless views omit the Download button", () => {
@@ -140,25 +140,25 @@ test("copy link: the page header exposes a Copy link button carrying the slug", 
   const html = layout(pageView());
   assert.match(
     html,
-    /<button type="button" class="button secondary" data-copy-slug="flux\/notes" data-copy-link>Copy link<\/button>/
+    /<button type="button" class="button secondary" data-copy-slug="kb25\/notes" data-copy-link>Copy link<\/button>/
   );
 });
 
 test("copy link: the sidebar ⋯ menu offers Copy link for a page", () => {
   const html = layout(
-    pageView({ tree: [node({ slug: "flux/guide", title: "Guide" })] })
+    pageView({ tree: [node({ slug: "kb25/guide", title: "Guide" })] })
   );
-  assert.match(html, /<button type="button" data-copy-slug="flux\/guide">Copy link<\/button>/);
+  assert.match(html, /<button type="button" data-copy-slug="kb25\/guide">Copy link<\/button>/);
 });
 
 test("copy link: folders also get a Copy link (header + ⋯ menu)", () => {
   const html = folderLayout(
-    folderView({ tree: [node({ slug: "flux/box", title: "Box", isFolder: true })] })
+    folderView({ tree: [node({ slug: "kb25/box", title: "Box", isFolder: true })] })
   );
   // Header button copies the folder's own slug…
-  assert.match(html, /data-copy-slug="flux\/box" data-copy-link>Copy link<\/button>/);
+  assert.match(html, /data-copy-slug="kb25\/box" data-copy-link>Copy link<\/button>/);
   // …and the sidebar row for a folder offers it too.
-  assert.match(html, /<button type="button" data-copy-slug="flux\/box">Copy link<\/button>/);
+  assert.match(html, /<button type="button" data-copy-slug="kb25\/box">Copy link<\/button>/);
 });
 
 test("copy link: the shortcut script binds Cmd/Ctrl+Shift+L and copies the slug", () => {
@@ -185,7 +185,7 @@ test("copy link: non-editable / rootless views omit the header Copy link button"
 test("issue #4: the sidebar Create menu offers Page and Folder", () => {
   const html = layout(pageView());
   assert.match(html, /<summary class="sidebar-link">Create<\/summary>/);
-  assert.match(html, /action="\/_create">\s*<input[^>]*value="flux"[^>]*>\s*<button type="submit">Page<\/button>/);
+  assert.match(html, /action="\/_create">\s*<input[^>]*value="kb25"[^>]*>\s*<button type="submit">Page<\/button>/);
   // The folder form now also carries a name text input before its button.
   assert.match(html, /action="\/_create-folder">[\s\S]*?name="name"[\s\S]*?<button type="submit">Folder<\/button>/);
   // The old single-purpose button is gone.
@@ -197,16 +197,16 @@ test("only real folders render a folder icon — content sections do not", () =>
     pageView({
       tree: [
         // A real folder (pure container).
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
+        node({ slug: "kb25/box", title: "Box", isSection: true, isFolder: true }),
         // A content section: a page that happens to have children — NOT a folder.
         node({
-          slug: "flux/handbook",
+          slug: "kb25/handbook",
           title: "Handbook",
           isSection: true,
           isFolder: false,
         }),
         // A leaf page.
-        node({ slug: "flux/notes", title: "Notes" }),
+        node({ slug: "kb25/notes", title: "Notes" }),
       ],
     })
   );
@@ -220,17 +220,17 @@ test("only leaf pages get a dot — folders and pages-with-children do not", () 
     pageView({
       tree: [
         // A real folder (pure container) — folder icon, no dot.
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
+        node({ slug: "kb25/box", title: "Box", isSection: true, isFolder: true }),
         // A content section: a page with children — expand caret, no dot.
         node({
-          slug: "flux/handbook",
+          slug: "kb25/handbook",
           title: "Handbook",
           isSection: true,
           isFolder: false,
-          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
+          children: [node({ slug: "kb25/handbook/intro", title: "Intro" })],
         }),
         // A leaf page — gets the dot.
-        node({ slug: "flux/notes", title: "Notes" }),
+        node({ slug: "kb25/notes", title: "Notes" }),
       ],
     })
   );
@@ -240,31 +240,31 @@ test("only leaf pages get a dot — folders and pages-with-children do not", () 
 });
 
 test("issue #4: the sidebar ⋯ menu offers New folder", () => {
-  const html = layout(pageView({ tree: [node({ slug: "flux/guide", title: "Guide" })] }));
-  assert.match(html, /action="\/_create-folder">[\s\S]*?value="flux\/guide"[\s\S]*?New folder<\/button>/);
+  const html = layout(pageView({ tree: [node({ slug: "kb25/guide", title: "Guide" })] }));
+  assert.match(html, /action="\/_create-folder">[\s\S]*?value="kb25\/guide"[\s\S]*?New folder<\/button>/);
 });
 
 test("the ⋯ menu for a folder shows Rename, not Edit/Download", () => {
   const html = layout(
     pageView({
-      tree: [node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true })],
+      tree: [node({ slug: "kb25/box", title: "Box", isSection: true, isFolder: true })],
     })
   );
   // Folder menu offers a rename form targeting the folder slug…
-  assert.match(html, /action="\/_rename-folder">[\s\S]*?value="flux\/box"/);
+  assert.match(html, /action="\/_rename-folder">[\s\S]*?value="kb25\/box"/);
   // …and omits the page-only Edit/Download actions for that node.
-  assert.doesNotMatch(html, /href="\/_edit\/flux\/box"/);
-  assert.doesNotMatch(html, /href="\/_download\/flux\/box"/);
+  assert.doesNotMatch(html, /href="\/_edit\/kb25\/box"/);
+  assert.doesNotMatch(html, /href="\/_download\/kb25\/box"/);
 });
 
 function folderView(overrides: Partial<FolderView> = {}): FolderView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "KB25", archived: false }],
-    spaceKey: "flux",
+    spaces: [{ key: "kb25", title: "KB25", archived: false }],
+    spaceKey: "kb25",
     tree: [],
-    activeSlug: "flux/box",
-    titles: new Map([["flux/box", "Box"]]),
+    activeSlug: "kb25/box",
+    titles: new Map([["kb25/box", "Box"]]),
     title: "Box",
     children: [],
     username: "alice",
@@ -276,14 +276,14 @@ test("folderLayout lists children and offers create/rename, but no Edit/Download
   const html = folderLayout(
     folderView({
       children: [
-        node({ slug: "flux/box/sub", title: "Sub", isSection: true, isFolder: true }),
-        node({ slug: "flux/box/note", title: "Note" }),
+        node({ slug: "kb25/box/sub", title: "Sub", isSection: true, isFolder: true }),
+        node({ slug: "kb25/box/note", title: "Note" }),
       ],
     })
   );
   // Contents listing with links to each child.
-  assert.match(html, /href="\/flux\/box\/sub">Sub<\/a>/);
-  assert.match(html, /href="\/flux\/box\/note">Note<\/a>/);
+  assert.match(html, /href="\/kb25\/box\/sub">Sub<\/a>/);
+  assert.match(html, /href="\/kb25\/box\/note">Note<\/a>/);
   // Create-inside + rename controls.
   assert.match(html, /action="\/_create-folder">/);
   assert.match(html, /action="\/_rename-folder">/);
@@ -302,7 +302,7 @@ function spacesView(overrides: Partial<SpacesView> = {}): SpacesView {
   return {
     siteTitle: "KB",
     spaces: [
-      { key: "flux", title: "KB25", summary: "Notes", icon: "📘", archived: false },
+      { key: "kb25", title: "KB25", summary: "Notes", icon: "📘", archived: false },
     ],
     username: "alice",
     ...overrides,
@@ -317,24 +317,24 @@ test("TODO #1: each space card carries a ⋯ menu with Rename, Archive, Delete",
   // Edit the name in place — inline rename posting the space key + new title.
   assert.match(
     html,
-    /action="\/_rename-space">[\s\S]*?name="key"[^>]*value="flux"[\s\S]*?name="title"[^>]*value="KB25"/
+    /action="\/_rename-space">[\s\S]*?name="key"[^>]*value="kb25"[\s\S]*?name="title"[^>]*value="KB25"/
   );
   // Archive the whole space.
   assert.match(
     html,
-    /action="\/_archive-space">[\s\S]*?value="flux"[\s\S]*?<button type="submit">Archive<\/button>/
+    /action="\/_archive-space">[\s\S]*?value="kb25"[\s\S]*?<button type="submit">Archive<\/button>/
   );
   // Delete goes through a confirmation route.
-  assert.match(html, /href="\/_delete-space\/flux">Delete<\/a>/);
+  assert.match(html, /href="\/_delete-space\/kb25">Delete<\/a>/);
 });
 
 test("TODO #1: confirmDelete renders a scary confirmation posting to _delete-space", () => {
-  const html = spacesLayout(spacesView({ confirmDelete: { key: "flux", title: "KB25" } }));
+  const html = spacesLayout(spacesView({ confirmDelete: { key: "kb25", title: "KB25" } }));
   assert.match(html, /Delete the “KB25” space\?/);
   assert.match(html, /its Git history/);
   assert.match(
     html,
-    /action="\/_delete-space\/flux">[\s\S]*?<button class="button danger" type="submit">Delete space<\/button>/
+    /action="\/_delete-space\/kb25">[\s\S]*?<button class="button danger" type="submit">Delete space<\/button>/
   );
   // Cancel bails back to the grid.
   assert.match(html, /href="\/">Cancel<\/a>/);
@@ -342,7 +342,7 @@ test("TODO #1: confirmDelete renders a scary confirmation posting to _delete-spa
 
 test("search: the in-space sidebar renders a combobox scoped to the space", () => {
   const html = layout(pageView());
-  assert.match(html, /data-search-space="flux"/);
+  assert.match(html, /data-search-space="kb25"/);
   assert.match(html, /role="combobox"/);
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /aria-controls="kb-search-results"/);
@@ -377,7 +377,7 @@ test("search: highlighting builds <mark> nodes rather than assigning HTML", () =
 
 test("search: the space name takes over as the move-to-space-root drop target", () => {
   const html = layout(pageView());
-  assert.match(html, /class="space-current" href="\/flux" data-drop-slug="flux"/);
+  assert.match(html, /class="space-current" href="\/kb25" data-drop-slug="kb25"/);
   // MOVE_SCRIPT discovers it through the selector it already uses.
   assert.match(html, /querySelectorAll\("\[data-drop-slug\], \[data-drop-root\]"\)/);
 });
@@ -394,15 +394,15 @@ test("tree rows open with exactly one marker glyph, so carets and dots share a c
       tree: [
         // A page with children: gets the caret.
         node({
-          slug: "flux/handbook",
+          slug: "kb25/handbook",
           title: "Handbook",
           isSection: true,
-          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
+          children: [node({ slug: "kb25/handbook/intro", title: "Intro" })],
         }),
         // A leaf page: gets the dot, in the caret's column.
-        node({ slug: "flux/notes", title: "Notes" }),
+        node({ slug: "kb25/notes", title: "Notes" }),
         // A folder: spacer or caret in that column, then its own icon.
-        node({ slug: "flux/box", title: "Box", isSection: true, isFolder: true }),
+        node({ slug: "kb25/box", title: "Box", isSection: true, isFolder: true }),
       ],
     })
   );
@@ -422,13 +422,13 @@ test("the open page's row is marked as the current page", () => {
     pageView({
       tree: [
         node({
-          slug: "flux/handbook",
+          slug: "kb25/handbook",
           title: "Handbook",
           isSection: true,
-          children: [node({ slug: "flux/notes", title: "Notes" })],
+          children: [node({ slug: "kb25/notes", title: "Notes" })],
         }),
       ],
-      activeSlug: "flux/notes",
+      activeSlug: "kb25/notes",
     })
   );
 
@@ -436,7 +436,7 @@ test("the open page's row is marked as the current page", () => {
   // `.tree a.active[data-drag-slug]`, so the class must keep its exact slot.
   assert.match(
     html,
-    /class="active" aria-current="page" draggable="true" data-drag-slug="flux\/notes"/
+    /class="active" aria-current="page" draggable="true" data-drag-slug="kb25\/notes"/
   );
   // One page is open, so exactly one row claims to be it.
   assert.equal([...html.matchAll(/aria-current="page"/g)].length, 1);
@@ -475,24 +475,24 @@ test("issue #2: every group gets an insertion line above each row and one closin
     pageView({
       tree: [
         node({
-          slug: "flux/handbook",
+          slug: "kb25/handbook",
           title: "Handbook",
           isSection: true,
-          children: [node({ slug: "flux/handbook/intro", title: "Intro" })],
+          children: [node({ slug: "kb25/handbook/intro", title: "Intro" })],
         }),
-        node({ slug: "flux/notes", title: "Notes" }),
+        node({ slug: "kb25/notes", title: "Notes" }),
       ],
     })
   );
 
   // Top level: above handbook, above notes, and one appending to the space root.
-  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux" data-drop-before="flux\/handbook"><\/li><li data-tree-slug="flux\/handbook">/);
-  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux" data-drop-before="flux\/notes"><\/li><li data-tree-slug="flux\/notes">/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="kb25" data-drop-before="kb25\/handbook"><\/li><li data-tree-slug="kb25\/handbook">/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="kb25" data-drop-before="kb25\/notes"><\/li><li data-tree-slug="kb25\/notes">/);
   // The closing line of a group carries no anchor — that means "append here".
-  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux"><\/li><\/ul>/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="kb25"><\/li><\/ul>/);
   // A child group reports its own parent, so a drop there nests rather than lifts.
-  assert.match(html, /data-drop-parent="flux\/handbook" data-drop-before="flux\/handbook\/intro"/);
-  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="flux\/handbook"><\/li>/);
+  assert.match(html, /data-drop-parent="kb25\/handbook" data-drop-before="kb25\/handbook\/intro"/);
+  assert.match(html, /<li class="drop-line" data-drop-line data-drop-parent="kb25\/handbook"><\/li>/);
 
   // Zero height, invisible until targeted: a tree at rest looks untouched. The
   // 2px indicator straddles a row boundary, so it must not take the hit test from
@@ -506,7 +506,7 @@ test("issue #2: the archive view renders no insertion lines, since it cannot dra
   const html = layout(
     pageView({
       isArchiveView: true,
-      tree: [node({ slug: "flux/notes", title: "Notes", archived: true })],
+      tree: [node({ slug: "kb25/notes", title: "Notes", archived: true })],
     })
   );
   assert.doesNotMatch(html, /data-drop-line/);
@@ -556,7 +556,7 @@ test("notes: the page view carries its notes as an escaped JSON payload", () => 
       ],
     })
   );
-  assert.match(html, /<div id="kb25-notes" hidden data-slug="flux\/notes" data-notes="/);
+  assert.match(html, /<div id="kb25-notes" hidden data-slug="kb25\/notes" data-notes="/);
   // Everything that could break out of the attribute or the document is escaped.
   assert.match(html, /&quot;n7k2m4x8&quot;/);
   assert.match(html, /&lt;b&gt;rolling&lt;\/b&gt;/);
@@ -565,7 +565,7 @@ test("notes: the page view carries its notes as an escaped JSON payload", () => 
 
 test("notes: the payload ships even with no notes, so the composer can post", () => {
   const html = layout(pageView());
-  assert.match(html, /data-slug="flux\/notes" data-notes="\[\]"/);
+  assert.match(html, /data-slug="kb25\/notes" data-notes="\[\]"/);
   assert.match(html, /fetch\("\/_notes\/" \+ slug/);
 });
 
@@ -730,7 +730,7 @@ test("notes: the pin finds a legal host inside list and table blocks", () => {
 
 test("dashboard: the corner button links to the space being viewed", () => {
   const html = layout(pageView());
-  assert.match(html, /class="dash-button" href="\/_dashboard\?space=flux"/);
+  assert.match(html, /class="dash-button" href="\/_dashboard\?space=kb25"/);
 });
 
 test("dashboard: no button outside a space, where it would report on nothing", () => {
@@ -738,7 +738,7 @@ test("dashboard: no button outside a space, where it would report on nothing", (
   // sidebar search.
   const html = spacesLayout({
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "KB25", archived: false }],
+    spaces: [{ key: "kb25", title: "KB25", archived: false }],
     username: "alice",
   } satisfies SpacesView);
   // The stylesheet still carries the rule — it is the anchor that must be absent.
@@ -753,7 +753,7 @@ test("dashboard: the space key is URL-encoded, not pasted into the href raw", ()
 
 test("dashboard: each task links to its own note anchor, not the page top", () => {
   const html = dashboardLayout(dashboardView());
-  assert.match(html, /href="\/flux\/deploy#note-aaa11111"/);
+  assert.match(html, /href="\/kb25\/deploy#note-aaa11111"/);
   assert.match(html, /class="task-count">2</);
 });
 
@@ -764,7 +764,7 @@ test("dashboard: a positional note id survives the trip into the fragment", () =
     dashboardView({
       groups: [
         {
-          slug: "flux/deploy",
+          slug: "kb25/deploy",
           title: "Deploy",
           notes: [note({ id: "@12" })],
         },
@@ -780,10 +780,10 @@ test("dashboard: each task carries a copy button holding its note reference", ()
   // both; the visible label is the bare id, to match against later.
   assert.match(
     html,
-    /<button type="button" class="task-copy" data-copy-slug="flux\/deploy#aaa11111" data-copy-label="Note ID"/
+    /<button type="button" class="task-copy" data-copy-slug="kb25\/deploy#aaa11111" data-copy-label="Note ID"/
   );
   assert.match(html, /<span class="task-id">aaa11111<\/span>/);
-  assert.match(html, /data-copy-slug="flux\/deploy#bbb22222"/);
+  assert.match(html, /data-copy-slug="kb25\/deploy#bbb22222"/);
 });
 
 test("dashboard: the copy button is a sibling of the row link, not nested in it", () => {
@@ -805,12 +805,12 @@ test("dashboard: a note reference is escaped, quotes included", () => {
   const html = dashboardLayout(
     dashboardView({
       groups: [
-        { slug: 'flux/a"b', title: "Odd", notes: [note({ id: '"><img src=x>' })] },
+        { slug: 'kb25/a"b', title: "Odd", notes: [note({ id: '"><img src=x>' })] },
       ],
     })
   );
   assert.doesNotMatch(html, /<img src=x/);
-  assert.match(html, /data-copy-slug="flux\/a&quot;b#&quot;&gt;&lt;img src=x&gt;"/);
+  assert.match(html, /data-copy-slug="kb25\/a&quot;b#&quot;&gt;&lt;img src=x&gt;"/);
 });
 
 test("dashboard: a positional id is copied with its page, which is what locates it", () => {
@@ -818,10 +818,10 @@ test("dashboard: a positional id is copied with its page, which is what locates 
   // makes the pasted reference resolvable.
   const html = dashboardLayout(
     dashboardView({
-      groups: [{ slug: "flux/deploy", title: "Deploy", notes: [note({ id: "@12" })] }],
+      groups: [{ slug: "kb25/deploy", title: "Deploy", notes: [note({ id: "@12" })] }],
     })
   );
-  assert.match(html, /data-copy-slug="flux\/deploy#@12"/);
+  assert.match(html, /data-copy-slug="kb25\/deploy#@12"/);
 });
 
 test("dashboard: note text and quotes are escaped, never trusted as markup", () => {
@@ -829,7 +829,7 @@ test("dashboard: note text and quotes are escaped, never trusted as markup", () 
     dashboardView({
       groups: [
         {
-          slug: "flux/deploy",
+          slug: "kb25/deploy",
           title: "<script>t</script>",
           notes: [
             note({ text: "<script>alert(1)</script>", quote: "<img src=x onerror=1>" }),
@@ -847,26 +847,26 @@ test("dashboard: a page's location reads as section titles, not slug segments", 
   const html = dashboardLayout(
     dashboardView({
       titles: new Map([
-        ["flux", "KB25"],
-        ["flux/runbooks", "Runbooks"],
-        ["flux/runbooks/deep", "Deep Dives"],
-        ["flux/runbooks/deep/deploy", "Deploy"],
+        ["kb25", "KB25"],
+        ["kb25/runbooks", "Runbooks"],
+        ["kb25/runbooks/deep", "Deep Dives"],
+        ["kb25/runbooks/deep/deploy", "Deploy"],
       ]),
       groups: [
-        { slug: "flux/runbooks/deep/deploy", title: "Deploy", notes: [note()] },
+        { slug: "kb25/runbooks/deep/deploy", title: "Deploy", notes: [note()] },
       ],
     })
   );
   // The space is implied and the leaf is already the heading beside it.
   assert.match(html, /class="task-crumb">Runbooks \/ Deep Dives</);
-  assert.doesNotMatch(html, /task-crumb">flux/);
+  assert.doesNotMatch(html, /task-crumb">kb25/);
 });
 
 test("dashboard: an untitled section falls back to its slug segment", () => {
   const html = dashboardLayout(
     dashboardView({
-      titles: new Map([["flux", "KB25"]]),
-      groups: [{ slug: "flux/runbooks/deploy", title: "Deploy", notes: [note()] }],
+      titles: new Map([["kb25", "KB25"]]),
+      groups: [{ slug: "kb25/runbooks/deploy", title: "Deploy", notes: [note()] }],
     })
   );
   assert.match(html, /class="task-crumb">runbooks</);
@@ -874,7 +874,7 @@ test("dashboard: an untitled section falls back to its slug segment", () => {
 
 test("dashboard: a page at the space root gets no location line at all", () => {
   const html = dashboardLayout(
-    dashboardView({ groups: [{ slug: "flux/deploy", title: "Deploy", notes: [note()] }] })
+    dashboardView({ groups: [{ slug: "kb25/deploy", title: "Deploy", notes: [note()] }] })
   );
   // The stylesheet still carries the rule — it is the span that must be absent.
   assert.doesNotMatch(html, /class="task-crumb"/);
@@ -907,7 +907,7 @@ test("dashboard: a task with no message reads as a bare mark, not a blank row", 
   const html = dashboardLayout(
     dashboardView({
       groups: [
-        { slug: "flux/deploy", title: "Deploy", notes: [note({ text: "" })] },
+        { slug: "kb25/deploy", title: "Deploy", notes: [note({ text: "" })] },
       ],
     })
   );
@@ -937,11 +937,11 @@ test("dashboard: a #note-<id> fragment scrolls to that note and opens it", () =>
 function editView(over: Partial<EditView> = {}): EditView {
   return {
     siteTitle: "KB",
-    spaces: [{ key: "flux", title: "KB25", archived: false }],
-    spaceKey: "flux",
+    spaces: [{ key: "kb25", title: "KB25", archived: false }],
+    spaceKey: "kb25",
     tree: [],
-    activeSlug: "flux/notes",
-    titles: new Map([["flux/notes", "Notes"]]),
+    activeSlug: "kb25/notes",
+    titles: new Map([["kb25/notes", "Notes"]]),
     title: "Notes",
     raw: "---\ntitle: Notes\n---\n# Notes\n",
     username: "elmir",
@@ -951,7 +951,7 @@ function editView(over: Partial<EditView> = {}): EditView {
 
 test("space instructions: the corner link appears only inside a space", () => {
   const inSpace = dashboardLayout(dashboardView());
-  assert.match(inSpace, /class="instructions-button" href="\/_instructions\?space=flux"/);
+  assert.match(inSpace, /class="instructions-button" href="\/_instructions\?space=kb25"/);
 
   // No active space (the archive browser, a 404) — nothing to point at.
   const noSpace = dashboardLayout(dashboardView({ spaceKey: "" }));
@@ -977,7 +977,7 @@ test("space instructions: an ordinary edit page gets no hint and no counter", ()
 test("space instructions: the instructions editor swaps slug rename for a counter", () => {
   const html = editLayout(
     editView({
-      activeSlug: "flux/_instructions",
+      activeSlug: "kb25/_instructions",
       title: "KB25 instructions",
       instructions: { cap: 2000, spaceTitle: "KB25" },
     })
@@ -989,7 +989,7 @@ test("space instructions: the instructions editor swaps slug rename for a counte
   // Renaming this file would break the mechanism that finds it.
   assert.doesNotMatch(html, /<input id="slug" name="slug"/);
   // It still posts to the ordinary editor endpoint.
-  assert.match(html, /action="\/_edit\/flux\/_instructions"/);
+  assert.match(html, /action="\/_edit\/kb25\/_instructions"/);
 });
 
 test("space instructions: the counter script ships only on that editor", () => {
@@ -998,7 +998,7 @@ test("space instructions: the counter script ships only on that editor", () => {
 
   const html = editLayout(
     editView({
-      activeSlug: "flux/_instructions",
+      activeSlug: "kb25/_instructions",
       instructions: { cap: 2000, spaceTitle: "KB25" },
     })
   );
@@ -1011,7 +1011,7 @@ test("space instructions: the counter script ships only on that editor", () => {
 test("space instructions: the space title is escaped in the hint", () => {
   const html = editLayout(
     editView({
-      activeSlug: "flux/_instructions",
+      activeSlug: "kb25/_instructions",
       instructions: { cap: 2000, spaceTitle: '<img src=x onerror=alert(1)>' },
     })
   );
@@ -1022,7 +1022,7 @@ test("space instructions: the space title is escaped in the hint", () => {
 test("space instructions: the hint states it is hidden and LLM-read-only", () => {
   const html = editLayout(
     editView({
-      activeSlug: "flux/_instructions",
+      activeSlug: "kb25/_instructions",
       instructions: { cap: 2000, spaceTitle: "KB25" },
     })
   );
@@ -1053,7 +1053,7 @@ test("views: every inline script in every layout parses as JavaScript", () => {
       "edit-instructions",
       editLayout(
         editView({
-          activeSlug: "flux/_instructions",
+          activeSlug: "kb25/_instructions",
           instructions: { cap: 2000, spaceTitle: "KB25" },
         })
       ),
