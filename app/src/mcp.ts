@@ -15,11 +15,13 @@ import { searchPages } from "./search.js";
 import { extractSections } from "./markdown.js";
 import {
   instructionsPayload,
+  instructionsReminder,
   isInstructionsSlug,
   loadSpaceInstructions,
+  makeInstructionsLedger,
   makeInstructionsTokens,
   missingTokenMessage,
-  type InstructionsPayload,
+  type InstructionsBlock,
 } from "./space-instructions.js";
 import { syncFromEnv } from "./sync.js";
 
@@ -232,6 +234,13 @@ const filterSchema = z.enum(["live", "archived", "all"]);
  */
 const instructionTokens = makeInstructionsTokens();
 
+/**
+ * Which spaces have already had their instruction text delivered this session,
+ * so a ten-page read chain carries it once rather than ten times. Per-process
+ * for the same reason the tokens are.
+ */
+const instructionLedger = makeInstructionsLedger();
+
 /** The `spaceInstructionsToken` param shared by every space-scoped write tool. */
 const instructionTokenSchema = z
   .string()
@@ -243,17 +252,23 @@ const instructionTokenSchema = z
 /**
  * Attach a space's instructions to a result, when it has any.
  *
- * Read from disk on every call. `Content.load` shares the mtime-keyed parse
- * cache, so a repeat read costs one `fs.stat` — which is what lets an edit made
- * in the browser reach the model on the very next tool call, with no restart.
+ * Still read from disk on every call. `Content.load` shares the mtime-keyed
+ * parse cache, so a repeat read costs one `fs.stat` — which is what lets an
+ * edit made in the browser reach the model on the very next tool call, with no
+ * restart. What the ledger decides is only whether the *text* rides along or a
+ * pointer to it does; the freshness check happens either way, and a changed
+ * file re-delivers in full.
  */
 async function withInstructions<T extends object>(
   spaceKey: string,
   payload: T
-): Promise<T & { spaceInstructions?: InstructionsPayload }> {
+): Promise<T & { spaceInstructions?: InstructionsBlock }> {
   const instructions = await loadSpaceInstructions(content, spaceKey);
   if (!instructions) return payload;
-  return { ...payload, spaceInstructions: instructionsPayload(instructions, instructionTokens) };
+  const spaceInstructions = instructionLedger.deliver(spaceKey, instructions.text)
+    ? instructionsPayload(instructions, instructionTokens)
+    : instructionsReminder(instructions, instructionTokens);
+  return { ...payload, spaceInstructions };
 }
 
 /** Space keys that carry instructions — the roster for cross-space results. */
@@ -278,6 +293,8 @@ async function gateWrite(spaceKey: string, provided: string | undefined) {
   if (!instructions) return null;
   if (instructionTokens.verify(spaceKey, instructions.text, provided)) return null;
   const stale = typeof provided === "string" && provided.trim() !== "";
+  // The refusal hands back the whole text, so it is a delivery like any other.
+  instructionLedger.noteDelivered(spaceKey, instructions.text);
   return errorResult(missingTokenMessage(instructions, instructionTokens, stale));
 }
 
@@ -310,7 +327,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on any tool result scoped to one space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Where a space has them, writing into it also requires passing that block's `token` back as the write tool's `spaceInstructionsToken` — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves. To point at one section of a page rather than the whole thing, append its anchor: `[[id:<id>#<anchor>]]` or `[[space/some/slug#<anchor>]]`. Anchors come back in `kb_get_page`'s `sections` and on each `kb_search` match — read them, do not guess them from the heading text.",
+      "Read and write access to the Markdown knowledge base. The KB is organized into spaces: top-level containers, each its own git repo, and the first segment of every page slug — so every page must live inside a space. Every write is auto-committed to its space's repo as `... via mcp`. SPACE INSTRUCTIONS: a space may carry standing instructions written by its owner — language, register, formatting, standing domain context — that govern everything you write there and how you answer questions about it. They arrive as a `spaceInstructions` block on the first tool result scoped to that space, and they are binding: follow them in preference to your own defaults, and do not restate or negotiate them. Later results in the same space carry a short block marked `unchanged` with the token but no text — the instructions delivered earlier still apply in full, and if you can no longer see them, call `kb_get_space_instructions` to get them back. Where a space has them, writing into it also requires passing that block's `token` back as the write tool's `spaceInstructionsToken` — so read a space before you write to it. The token changes whenever a person edits the instructions; a refused write returns the current text and a fresh token, so retry once with those. `kb_get_space_instructions` fetches them directly, and `kb_list_spaces` reports which spaces have them. LINKING: every page has a stable `id`, returned by the read and create tools. Prefer a wiki-link by id — `[[id:<id>]]` or `[[id:<id>|Link text]]` — which keeps resolving even after the target is moved or renamed; a slug-based link like `[[space/some/slug]]` or `[text](/space/some/slug)` breaks when the target moves. To point at one section of a page rather than the whole thing, append its anchor: `[[id:<id>#<anchor>]]` or `[[space/some/slug#<anchor>]]`. Anchors come back in `kb_get_page`'s `sections` and on each `kb_search` match — read them, do not guess them from the heading text.",
   }
 );
 
@@ -374,6 +391,9 @@ server.registerTool(
         note: "This space has no standing instructions, so writes into it need no spaceInstructionsToken.",
       });
     }
+    // Always the full text: this is the route a model takes precisely when it
+    // can no longer see the rules, so it must never answer with a pointer.
+    instructionLedger.noteDelivered(spaceKey, instructions.text);
     return textResult({
       hasInstructions: true,
       ...instructionsPayload(instructions, instructionTokens),

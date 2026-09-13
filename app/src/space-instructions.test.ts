@@ -9,10 +9,14 @@ import {
   capState,
   ensureSpaceInstructions,
   hasSpaceInstructions,
+  REFRESH_AFTER,
   instructionsPayload,
+  instructionsReminder,
   instructionsSlug,
   isInstructionsSlug,
+  isReminder,
   loadSpaceInstructions,
+  makeInstructionsLedger,
   makeInstructionsTokens,
   missingTokenMessage,
   type SpaceInstructions,
@@ -307,6 +311,93 @@ test("payload: the token in a payload verifies against the delivered text", () =
     tokens
   );
   assert.equal(tokens.verify("de", delivered, payload.token), true);
+});
+
+// --- the delivery ledger ----------------------------------------------------
+
+test("ledger: the first scoped result carries the text, the next does not", () => {
+  const ledger = makeInstructionsLedger();
+  assert.equal(ledger.deliver("de", "rules"), true);
+  assert.equal(ledger.deliver("de", "rules"), false);
+  assert.equal(ledger.deliver("de", "rules"), false);
+});
+
+test("ledger: spaces are tracked apart", () => {
+  const ledger = makeInstructionsLedger();
+  assert.equal(ledger.deliver("de", "german rules"), true);
+  assert.equal(ledger.deliver("de", "german rules"), false);
+  // Entering a second space still costs its own full delivery.
+  assert.equal(ledger.deliver("eng", "english rules"), true);
+  assert.equal(ledger.deliver("eng", "english rules"), false);
+});
+
+test("ledger: an edited file re-delivers in full", () => {
+  const ledger = makeInstructionsLedger();
+  ledger.deliver("de", "rules");
+  assert.equal(ledger.deliver("de", "rules"), false);
+  // What the model is holding is no longer what the author wrote.
+  assert.equal(ledger.deliver("de", "rules, revised"), true);
+  assert.equal(ledger.deliver("de", "rules, revised"), false);
+});
+
+test("ledger: the text rides again after the refresh interval", () => {
+  const ledger = makeInstructionsLedger(3);
+  assert.equal(ledger.deliver("de", "rules"), true);
+  assert.deepEqual(
+    [ledger.deliver("de", "rules"), ledger.deliver("de", "rules"), ledger.deliver("de", "rules")],
+    [false, false, false]
+  );
+  // The interval is what bounds how long a compacted session writes blind.
+  assert.equal(ledger.deliver("de", "rules"), true);
+  assert.equal(ledger.deliver("de", "rules"), false);
+});
+
+test("ledger: the default interval is the exported one", () => {
+  const ledger = makeInstructionsLedger();
+  ledger.deliver("de", "rules");
+  for (let i = 0; i < REFRESH_AFTER; i += 1) {
+    assert.equal(ledger.deliver("de", "rules"), false, `call ${i + 1} should be quiet`);
+  }
+  assert.equal(ledger.deliver("de", "rules"), true);
+});
+
+test("ledger: a delivery by another route restarts the interval", () => {
+  const ledger = makeInstructionsLedger(2);
+  ledger.deliver("de", "rules");
+  ledger.deliver("de", "rules");
+  // kb_get_space_instructions and a refused write both hand back the whole
+  // text, so neither should be followed by a redundant full re-send.
+  ledger.noteDelivered("de", "rules");
+  assert.equal(ledger.deliver("de", "rules"), false);
+  assert.equal(ledger.deliver("de", "rules"), false);
+  assert.equal(ledger.deliver("de", "rules"), true);
+});
+
+// --- the reminder block -----------------------------------------------------
+
+test("reminder: carries a usable token and no text", () => {
+  const tokens = makeInstructionsTokens("nonce-a");
+  const instr = instructions();
+  const reminder = instructionsReminder(instr, tokens);
+
+  assert.equal(reminder.space, "de");
+  assert.equal(reminder.unchanged, true);
+  assert.equal("text" in reminder, false);
+  // The saving is only worth having if a read -> write chain still works off it.
+  assert.equal(tokens.verify("de", instr.text, reminder.token), true);
+});
+
+test("reminder: names the recovery route for a compacted session", () => {
+  const reminder = instructionsReminder(instructions(), makeInstructionsTokens("nonce-a"));
+  assert.match(reminder.note, /kb_get_space_instructions/);
+  assert.match(reminder.note, /still govern/);
+});
+
+test("reminder: the two blocks are distinguishable", () => {
+  const tokens = makeInstructionsTokens("nonce-a");
+  const instr = instructions();
+  assert.equal(isReminder(instructionsReminder(instr, tokens)), true);
+  assert.equal(isReminder(instructionsPayload(instr, tokens)), false);
 });
 
 // --- the retry message ------------------------------------------------------

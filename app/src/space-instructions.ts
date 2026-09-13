@@ -270,6 +270,95 @@ export function instructionsPayload(
 }
 
 /**
+ * How many token-only results a space may hand out before the text rides again.
+ *
+ * The repetition this ledger removes was doing one accidental job: keeping the
+ * rules near the end of the transcript. A session that compacts can lose the
+ * text while the ledger still believes it landed — and the token goes on
+ * verifying, so a write would sail through with the rules gone. Re-sending on a
+ * fixed interval bounds that window without giving back the saving: a read
+ * chain pays for the text once every 21 scoped results instead of every one.
+ */
+export const REFRESH_AFTER = 20;
+
+/** The compact block sent once a space's text is already in the transcript. */
+export interface InstructionsReminder {
+  space: string;
+  token: string;
+  unchanged: true;
+  note: string;
+}
+
+/** What rides along on a space-scoped result: the text, or a pointer to it. */
+export type InstructionsBlock = InstructionsPayload | InstructionsReminder;
+
+/** Narrowing helper, so a caller can tell which of the two it received. */
+export function isReminder(block: InstructionsBlock): block is InstructionsReminder {
+  return "unchanged" in block;
+}
+
+export interface InstructionsLedger {
+  /**
+   * Record a delivery, and say whether the full text must ride along this time.
+   * True on a space's first scoped result, whenever the text has changed since
+   * the last send, and once every `refreshAfter` results after that.
+   */
+  deliver(spaceKey: string, text: string): boolean;
+  /** Record that the full text reached the model by some other route. */
+  noteDelivered(spaceKey: string, text: string): void;
+}
+
+/**
+ * Per-session record of which spaces have already had their text delivered.
+ *
+ * Keyed on the text and not merely the space, so an edit saved in the browser
+ * re-delivers on the next scoped read — for the same reason it invalidates
+ * outstanding tokens: what the model is holding is no longer what the author
+ * wrote. Module-level session state is safe here for the same reason the token
+ * nonce is: the MCP server is stdio only, one process per client.
+ */
+export function makeInstructionsLedger(refreshAfter = REFRESH_AFTER): InstructionsLedger {
+  const sent = new Map<string, { text: string; quiet: number }>();
+
+  const record = (spaceKey: string, text: string) => {
+    sent.set(spaceKey, { text, quiet: 0 });
+  };
+
+  return {
+    deliver(spaceKey, text) {
+      const seen = sent.get(spaceKey);
+      if (!seen || seen.text !== text || seen.quiet >= refreshAfter) {
+        record(spaceKey, text);
+        return true;
+      }
+      seen.quiet += 1;
+      return false;
+    },
+    noteDelivered: record,
+  };
+}
+
+/**
+ * The pointer sent in place of text the model already has.
+ *
+ * Carries the token, so a read → write chain still needs only the one full
+ * delivery that opened it, and names the recovery route for the case the
+ * interval cannot cover: a model that has been compacted since knows it by the
+ * plain fact that it cannot see the rules the note refers to.
+ */
+export function instructionsReminder(
+  instructions: SpaceInstructions,
+  tokens: InstructionsTokens
+): InstructionsReminder {
+  return {
+    space: instructions.spaceKey,
+    token: tokens.tokenFor(instructions.spaceKey, instructions.text),
+    unchanged: true,
+    note: `The standing instructions for "${instructions.spaceKey}" were delivered earlier in this session and have not changed since. They still govern what you write here. If they are no longer in your context, call kb_get_space_instructions before writing.`,
+  };
+}
+
+/**
  * The error returned when a write into an instructed space arrives without a
  * valid token. Carries the current text *and* a usable token, so exactly one
  * retry always succeeds.
