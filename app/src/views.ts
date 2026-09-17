@@ -3621,6 +3621,14 @@ body.dragging-page .space-current{
   border-radius:2px; padding:0 .05em; cursor:pointer;
 }
 .prose mark.note-mark.is-active{background:var(--note-bg-strong)}
+.prose mark.note-mark.is-highlight{
+  background:transparent; color:inherit; border-radius:0; padding:0;
+  text-decoration-line:underline; text-decoration-color:var(--note-pin);
+  text-decoration-thickness:.14em; text-underline-offset:.12em;
+}
+.prose mark.note-mark.is-highlight.is-active{
+  background:transparent; text-decoration-thickness:.22em;
+}
 .note-pin{
   position:absolute; left:-22px; top:.3em; width:14px; height:14px; padding:0;
   border:2px solid var(--note-pin); border-radius:50%; background:var(--note-pin);

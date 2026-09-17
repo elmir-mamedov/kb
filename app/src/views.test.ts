@@ -661,7 +661,7 @@ test("notes: the switch offers highlight, remark, task — highlight first", () 
   assert.match(html, /if \(note\.text\) \{\s*const body = document\.createElement\("div"\)/);
 });
 
-test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
+test("notes: tasks are purple, highlights underline yellow, remarks stay teal", () => {
   const html = layout(pageView());
   // Every theme block defines both palettes; one missing them renders unstyled.
   assert.equal(html.split("--task-bg:").length - 1, 3);
@@ -677,6 +677,16 @@ test("notes: tasks are purple, highlights yellow, remarks stay teal", () => {
   assert.match(html, /\.note-mark\.is-highlight,[^{]+\{\s*--note-bg:var\(--highlight-bg\)/);
   assert.match(html, /\.note-kind\.is-remark\{background:var\(--surface-hover\)/);
   assert.match(html, /mark\.className = "note-mark is-" \+ note\.kind/);
+  // In prose, a highlight is only a yellow underline: it does not repaint the
+  // words or cover them with the palette used by its pin and kind badge.
+  assert.match(
+    html,
+    /\.prose mark\.note-mark\.is-highlight\{\s*background:transparent; color:inherit;[^}]+text-decoration-line:underline; text-decoration-color:var\(--note-pin\)/
+  );
+  assert.match(
+    html,
+    /\.prose mark\.note-mark\.is-highlight\.is-active\{\s*background:transparent; text-decoration-thickness:/
+  );
   // One pin per block, coloured by the loudest kind on it.
   assert.match(html, /pin\.classList\.toggle\("is-task", loudest === "task"\)/);
   assert.match(html, /pin\.classList\.toggle\("is-highlight", loudest === "highlight"\)/);
